@@ -59,8 +59,12 @@ def matches(read: str, wanted: str) -> bool:
 class PlateReader:
     def __init__(self, every: int = 1, min_conf: float = 0.5, cooldown: float = 60.0,
                  detector_model: str = "yolo-v9-s-608-license-plate-end2end") -> None:
-        # En buyuk plaka bulucu (s-608) + en buyuk global OCR (cct-s-v2)
+        # En buyuk plaka bulucu (s-608) + en buyuk global OCR (cct-s-v2).
+        # s-608 bazi plakalari kaciriyor (testte sentetik plakayi bulamadi, t-384 buldu):
+        # buyuk model bir sey bulamazsa kucuk model de bakar.
         self.alpr = ALPR(detector_model=detector_model, ocr_model="cct-s-v2-global-model")
+        self.alpr_backup = ALPR(detector_model="yolo-v9-t-384-license-plate-end2end",
+                                ocr_model="cct-s-v2-global-model")
         self._lock = threading.Lock()
         self._frame = None
         self._event = threading.Event()
@@ -141,7 +145,8 @@ class PlateReader:
         boxes, announcements, captures = [], [], []
         self.last_boxes = []
         self.last_reads = []
-        for r in self.alpr.predict(frame):
+        results = self.alpr.predict(frame) or self.alpr_backup.predict(frame)
+        for r in results:
             bb = r.detection.bounding_box
             xyxy = (int(bb.x1), int(bb.y1), int(bb.x2), int(bb.y2))
             if r.ocr is None or not r.ocr.text:
