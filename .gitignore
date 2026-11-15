@@ -4,3 +4,7 @@ ios/Payload/
 ios/*.ipa
 ios/*.xcodeproj/
 .DS_Store
+
+vision/models/
+vision/captures/
+__pycache__/

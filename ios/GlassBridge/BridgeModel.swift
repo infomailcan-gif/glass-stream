@@ -69,6 +69,9 @@ final class BridgeModel {
     uploader.onConnectionChange = { [weak self] connected in
       Task { @MainActor in self?.socketConnected = connected }
     }
+    uploader.onAnnounce = { [weak self] text in
+      Task { @MainActor in self?.announce(text) }
+    }
 
     Task { [weak self] in
       guard let self else { return }
@@ -270,6 +273,21 @@ final class BridgeModel {
       report(error.localizedDescription)
       stop()
     }
+  }
+
+  // MARK: - Sesli anons
+
+  var speechEnabled = true
+  var lastAnnouncement: String?
+  @ObservationIgnored private let speaker = Speaker()
+
+  func announce(_ text: String) {
+    lastAnnouncement = text
+    if speechEnabled { speaker.say(text) }
+  }
+
+  func testSpeech() {
+    speaker.say("Glass Bridge sesli bildirim testi.")
   }
 
   // MARK: - Hata

@@ -41,6 +41,18 @@ struct ContentView: View {
           Text("PC'de `npm start` çalıştırınca ekrana yazılan “iPhone için” adresini gir.")
         }
 
+        Section {
+          Toggle("Anonsları sesli oku", isOn: $model.speechEnabled)
+          Button("Sesi test et") { model.testSpeech() }
+          if let last = model.lastAnnouncement {
+            LabeledContent("Son anons", value: last)
+          }
+        } header: {
+          Text("Sesli bildirim")
+        } footer: {
+          Text("PC'deki analiz (maske, QR…) anons gönderince gözlük hoparlöründen okunur.")
+        }
+
         Section("3 · Görüntü ayarı") {
           Picker("Çözünürlük", selection: $model.quality) {
             ForEach(StreamQuality.allCases) { Text($0.title).tag($0) }

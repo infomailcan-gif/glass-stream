@@ -41,6 +41,8 @@ const server = http.createServer((req, res) => {
 
 const ingestWss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
 const viewWss = new WebSocketServer({ noServer: true });
+// Goruntu isleme servisi (Python): kareleri alir, JSON sonuc yollar
+const visionWss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 });
 
 const stats = { sources: 0, frames: 0, lastFrameAt: 0, lastSize: 0 };
 
@@ -50,6 +52,8 @@ server.on("upgrade", (req, socket, head) => {
     ingestWss.handleUpgrade(req, socket, head, (ws) => ingestWss.emit("connection", ws, req));
   } else if (p === "/view") {
     viewWss.handleUpgrade(req, socket, head, (ws) => viewWss.emit("connection", ws, req));
+  } else if (p === "/vision") {
+    visionWss.handleUpgrade(req, socket, head, (ws) => visionWss.emit("connection", ws, req));
   } else {
     socket.destroy();
   }
@@ -66,7 +70,7 @@ ingestWss.on("connection", (ws, req) => {
     stats.frames++;
     stats.lastFrameAt = Date.now();
     stats.lastSize = data.length;
-    for (const viewer of viewWss.clients) {
+    for (const viewer of [...viewWss.clients, ...visionWss.clients]) {
       // Yavas izleyiciyi bekletme: arabellek doluysa bu kareyi atla (her zaman en guncel kare)
       if (viewer.readyState === 1 && viewer.bufferedAmount < 1024 * 1024) {
         viewer.send(data, { binary: true });
@@ -84,6 +88,34 @@ ingestWss.on("connection", (ws, req) => {
 viewWss.on("connection", (ws) => {
   console.log(`[view] izleyici baglandi (toplam ${viewWss.clients.size})`);
   ws.send(JSON.stringify({ type: "status", sources: stats.sources }));
+  // Web sayfasindan gelen komutlar (or. sayaclari sifirla) -> goruntu isleme servisine
+  ws.on("message", (data, isBinary) => {
+    if (isBinary) return;
+    for (const v of visionWss.clients) if (v.readyState === 1) v.send(data.toString());
+  });
+});
+
+// Python servisinden gelen JSON:
+//   {type:"detections", ...} -> web izleyicilere (kutular, sayaclar)
+//   {type:"announce", text}  -> web izleyicilere + telefona (gozlukten sesli okunur)
+visionWss.on("connection", (ws) => {
+  console.log("[vision] goruntu isleme servisi baglandi");
+  ws.on("message", (data, isBinary) => {
+    if (isBinary) return;
+    const text = data.toString();
+    let msg;
+    try {
+      msg = JSON.parse(text);
+    } catch {
+      return;
+    }
+    for (const v of viewWss.clients) if (v.readyState === 1) v.send(text);
+    if (msg.type === "announce") {
+      console.log(`[anons] ${msg.text}`);
+      for (const phone of ingestWss.clients) if (phone.readyState === 1) phone.send(text);
+    }
+  });
+  ws.on("close", () => console.log("[vision] servis ayrildi"));
 });
 
 function broadcastStatus() {

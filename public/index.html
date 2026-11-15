@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Glass Stream</title>
 <style>
-  :root { --bg:#0e0f11; --panel:#17191c; --fg:#e8e8e8; --muted:#8a8f98; --ok:#3ccf7a; --bad:#e5534b; }
+  :root { --bg:#0e0f11; --panel:#17191c; --fg:#e8e8e8; --muted:#8a8f98; --ok:#3ccf7a; --bad:#e5534b; --warn:#f2c94c; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, sans-serif; height:100vh; display:flex; flex-direction:column; }
   header { display:flex; gap:16px; align-items:center; padding:10px 16px; background:var(--panel); flex-wrap:wrap; }
@@ -13,10 +13,25 @@
   .pill { display:flex; align-items:center; gap:6px; color:var(--muted); }
   .dot { width:9px; height:9px; border-radius:50%; background:var(--bad); }
   .dot.on { background:var(--ok); }
-  main { flex:1; display:flex; align-items:center; justify-content:center; padding:16px; min-height:0; }
-  #frame { max-width:100%; max-height:100%; border-radius:8px; background:#000; display:none; }
+  .layout { flex:1; display:flex; min-height:0; }
+  main { flex:1; display:flex; align-items:center; justify-content:center; padding:16px; min-height:0; min-width:0; }
+  #stage { position:relative; max-width:100%; max-height:100%; display:none; }
+  #frame { display:block; max-width:100%; max-height:calc(100vh - 90px); border-radius:8px; background:#000; }
+  #overlay { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
   #empty { color:var(--muted); text-align:center; }
-  button { background:#2a2d32; color:var(--fg); border:0; padding:6px 12px; border-radius:6px; cursor:pointer; margin-left:auto; }
+  aside { width:280px; background:var(--panel); padding:14px; display:flex; flex-direction:column; gap:14px; overflow:auto; }
+  .counts { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .card { background:#202328; border-radius:8px; padding:10px; }
+  .card b { display:block; font-size:24px; font-variant-numeric:tabular-nums; }
+  .card span { color:var(--muted); font-size:12px; }
+  .card.ok b { color:var(--ok); } .card.bad b { color:var(--bad); }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:0 0 6px; }
+  #log { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; font-size:13px; }
+  #log li { background:#202328; border-radius:6px; padding:6px 8px; }
+  #log time { color:var(--muted); font-size:11px; margin-right:6px; }
+  button { background:#2a2d32; color:var(--fg); border:0; padding:6px 12px; border-radius:6px; cursor:pointer; }
+  #snap { margin-left:auto; }
+  @media (max-width: 760px) { .layout { flex-direction:column; } aside { width:auto; } }
 </style>
 </head>
 <body>
@@ -24,26 +39,89 @@
   <h1>Glass Stream</h1>
   <span class="pill"><span id="srvDot" class="dot"></span><span id="srvTxt">Sunucu: bağlanıyor</span></span>
   <span class="pill"><span id="srcDot" class="dot"></span><span id="srcTxt">Gözlük: yok</span></span>
+  <span class="pill"><span id="visDot" class="dot"></span><span id="visTxt">Analiz: yok</span></span>
   <span class="pill" id="fps">0 FPS</span>
   <span class="pill" id="res">–</span>
   <button id="snap">Kareyi kaydet</button>
 </header>
-<main>
-  <img id="frame" alt="Canlı görüntü">
-  <div id="empty">Görüntü bekleniyor…<br>iPhone uygulamasını başlat veya <a href="/sender.html" style="color:#8ab4ff">test göndericiyi</a> aç.</div>
-</main>
+<div class="layout">
+  <main>
+    <div id="stage">
+      <img id="frame" alt="Canlı görüntü">
+      <canvas id="overlay"></canvas>
+    </div>
+    <div id="empty">Görüntü bekleniyor…<br>iPhone uygulamasını başlat veya <a href="/sender.html" style="color:#8ab4ff">test göndericiyi</a> aç.</div>
+  </main>
+  <aside>
+    <div>
+      <h2>Sayaçlar</h2>
+      <div class="counts">
+        <div class="card"><b id="cVisible">0</b><span>Şu an görünen</span></div>
+        <div class="card"><b id="cTotal">0</b><span>Toplam kişi</span></div>
+        <div class="card ok"><b id="cMask">0</b><span>Maskeli</span></div>
+        <div class="card bad"><b id="cNoMask">0</b><span>Maskesiz</span></div>
+      </div>
+      <p id="maskNote" style="color:var(--muted);font-size:12px;margin:8px 0 0"></p>
+      <button id="reset" style="margin-top:8px">Sayaçları sıfırla</button>
+    </div>
+    <div>
+      <h2>Anonslar</h2>
+      <ul id="log"></ul>
+    </div>
+  </aside>
+</div>
 <script>
 const img = document.getElementById("frame");
+const stage = document.getElementById("stage");
+const canvas = document.getElementById("overlay");
+const ctx = canvas.getContext("2d");
 const empty = document.getElementById("empty");
-let frames = 0, lastUrl = null, lastBlob = null;
+let frames = 0, lastUrl = null, lastBlob = null, lastDet = null, lastDetAt = 0, ws;
 
 function setDot(id, on, txt) {
   document.getElementById(id + "Dot").classList.toggle("on", on);
   document.getElementById(id + "Txt").textContent = txt;
 }
 
+function drawOverlay() {
+  const w = img.clientWidth, h = img.clientHeight;
+  if (canvas.width !== w * devicePixelRatio) { canvas.width = w * devicePixelRatio; canvas.height = h * devicePixelRatio; }
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (!lastDet || Date.now() - lastDetAt > 1500) return; // eski sonuclari cizme
+  ctx.font = "600 12px system-ui";
+  for (const b of lastDet.boxes) {
+    const x = b.x1 * w, y = b.y1 * h, bw = (b.x2 - b.x1) * w, bh = (b.y2 - b.y1) * h;
+    ctx.strokeStyle = b.color; ctx.lineWidth = b.thin ? 1.5 : 3;
+    ctx.strokeRect(x, y, bw, bh);
+    if (!b.thin) {
+      const tw = ctx.measureText(b.label).width + 8;
+      ctx.fillStyle = b.color; ctx.fillRect(x, Math.max(0, y - 18), tw, 18);
+      ctx.fillStyle = "#000"; ctx.fillText(b.label, x + 4, Math.max(13, y - 5));
+    }
+  }
+}
+
+function onDetections(m) {
+  lastDet = m; lastDetAt = Date.now();
+  const c = m.counts;
+  cVisible.textContent = c.visible; cTotal.textContent = c.total_people;
+  cMask.textContent = c.mask; cNoMask.textContent = c.no_mask;
+  maskNote.textContent = m.mask_model ? "" : "Maske modeli yüklü değil — sadece kişi sayımı.";
+  setDot("vis", true, `Analiz: ${m.fps ?? "…"} FPS · ${m.latency_ms} ms`);
+  drawOverlay();
+}
+
+function onAnnounce(text) {
+  const li = document.createElement("li");
+  li.innerHTML = `<time>${new Date().toLocaleTimeString()}</time>`;
+  li.append(text);
+  log.prepend(li);
+  while (log.children.length > 30) log.lastChild.remove();
+}
+
 function connect() {
-  const ws = new WebSocket(`ws://${location.host}/view`);
+  ws = new WebSocket(`ws://${location.host}/view`);
   ws.binaryType = "blob";
   ws.onopen = () => setDot("srv", true, "Sunucu: bağlı");
   ws.onclose = () => { setDot("srv", false, "Sunucu: kopuk"); setTimeout(connect, 1000); };
@@ -51,6 +129,8 @@ function connect() {
     if (typeof ev.data === "string") {
       const m = JSON.parse(ev.data);
       if (m.type === "status") setDot("src", m.sources > 0, m.sources > 0 ? "Gözlük: yayında" : "Gözlük: yok");
+      else if (m.type === "detections") onDetections(m);
+      else if (m.type === "announce") onAnnounce(m.text);
       return;
     }
     frames++;
@@ -60,15 +140,23 @@ function connect() {
       if (lastUrl) URL.revokeObjectURL(lastUrl);
       lastUrl = url;
       document.getElementById("res").textContent = `${img.naturalWidth}×${img.naturalHeight}`;
+      drawOverlay();
     };
     img.src = url;
-    img.style.display = "block";
+    stage.style.display = "block";
     empty.style.display = "none";
   };
 }
 connect();
 
-setInterval(() => { document.getElementById("fps").textContent = `${frames} FPS`; frames = 0; }, 1000);
+setInterval(() => {
+  document.getElementById("fps").textContent = `${frames} FPS`; frames = 0;
+  if (Date.now() - lastDetAt > 3000) setDot("vis", false, "Analiz: yok");
+}, 1000);
+
+document.getElementById("reset").onclick = () => {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "reset" }));
+};
 
 document.getElementById("snap").onclick = () => {
   if (!lastBlob) return;

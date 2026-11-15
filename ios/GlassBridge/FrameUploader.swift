@@ -86,17 +86,29 @@ final class FrameUploader: NSObject, URLSessionWebSocketDelegate, @unchecked Sen
     listen(on: t)
   }
 
-  /// Sunucudan gelen mesajlari oku (simdilik kullanilmiyor, ama okumazsak
-  /// kopmayi gec fark ederiz).
+  /// Sunucudan gelen mesajlari oku. {"type":"announce","text":"..."} -> onAnnounce
   private func listen(on t: URLSessionWebSocketTask) {
     t.receive { [weak self] result in
       guard let self else { return }
       switch result {
-      case .success: self.listen(on: t)
-      case .failure: self.handleDrop(of: t)
+      case .success(let message):
+        if case .string(let text) = message,
+          let data = text.data(using: .utf8),
+          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          obj["type"] as? String == "announce",
+          let say = obj["text"] as? String
+        {
+          self.onAnnounce?(say)
+        }
+        self.listen(on: t)
+      case .failure:
+        self.handleDrop(of: t)
       }
     }
   }
+
+  /// PC'den gelen sesli anons metni (ana thread garanti degil).
+  var onAnnounce: (@Sendable (String) -> Void)?
 
   private func handleDrop(of t: URLSessionWebSocketTask) {
     lock.lock()
