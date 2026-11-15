@@ -501,7 +501,8 @@ def run(args: argparse.Namespace) -> None:
                                 on = bool(cmd.get("on"))
                                 if on != state["ai"]:
                                     state["ai"] = on
-                                    say("Yapay zekâ katmanı çalışıyor." if on else "Yapay zekâ katmanı kapatıldı.")
+                                    say("Yapay zekâ katmanı çalışıyor. Seni dinliyorum." if on
+                                        else "Yapay zekâ katmanı kapatıldı.")
                                 elif cmd.get("source") == "voice":
                                     say("Yapay zekâ katmanı zaten açık." if on else "Yapay zekâ katmanı zaten kapalı.")
                                 send_state()
@@ -565,8 +566,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Glass Stream goruntu isleme servisi (ISG)")
     ap.add_argument("--server", default="ws://localhost:8000/vision")
     ap.add_argument("--claude-model", default="sonnet", help="Claude Code modeli: sonnet | haiku | opus")
-    ap.add_argument("--ai-off", dest="ai_on", action="store_false",
-                    help="yapay zeka katmani kapali baslasin (sesli komutla acilir)")
+    ap.add_argument("--ai-on", dest="ai_on", action="store_true",
+                    help="yapay zeka katmani acik baslasin (varsayilan: kapali; 'yapay zeka katmanini baslat' ile acilir)")
     ap.add_argument("--model", default="ppe_sh17m.pt", help="SH17 KKD modeli (vision/models icinde)")
     ap.add_argument("--conf", type=float, default=0.35, help="tespit esigi")
     ap.add_argument("--min-height", type=float, default=0.12, help="sayilacak kisinin min. yuksekligi (kare orani)")

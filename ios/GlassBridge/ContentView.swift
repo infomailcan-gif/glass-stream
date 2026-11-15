@@ -54,7 +54,7 @@ struct ContentView: View {
         } header: {
           Text("Sesli komutlar")
         } footer: {
-          Text("“Yapay zekâ katmanını çalıştır / kapat”, “Kaydı başlat / durdur”, “Claude, …” (soru).")
+          Text("“Yapay zekâ katmanını başlat” → analiz + Claude sohbet modu (her cümle Claude'a gider). “Yapay zekâ katmanını kapat”, “Kaydı başlat / durdur”, “Claude, …” (her zaman), “sus”.")
         }
 
         Section {

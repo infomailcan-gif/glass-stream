@@ -86,6 +86,8 @@ ingestWss.on("connection", (ws, req) => {
   stats.sources++;
   console.log(`[ingest] kaynak baglandi: ${req.socket.remoteAddress}`);
   broadcastStatus();
+  // Analiz servisinden guncel durumu (yapay zeka acik mi, kayit) iste -> telefona da gider
+  for (const v of visionWss.clients) if (v.readyState === 1) v.send(JSON.stringify({ type: "hello" }));
 
   ws.on("message", (data, isBinary) => {
     if (!isBinary) {

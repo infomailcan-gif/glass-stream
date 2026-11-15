@@ -323,6 +323,8 @@ final class BridgeModel {
       if let say = obj["text"] as? String { announce(say) }
     case "ai_state":
       aiOn = obj["on"] as? Bool
+      // Yapay zeka katmani acikken Claude sohbet modunda: "Claude" demeden her cumle soru olur
+      voice.conversationMode = aiOn ?? false
     case "recording":
       recordingActive = obj["active"] as? Bool ?? false
     case "assistant":
@@ -369,6 +371,12 @@ final class BridgeModel {
     case .recordStop:
       uploader.sendJSON(["type": "record", "action": "stop", "source": "voice"])
     case .ask(let question):
+      let stop = ["sus", "dur", "yeter", "kes"].contains(VoiceCommands.normalize(question))
+      if stop {
+        speaker.stop()  // okunmakta olan cevabi hemen kes
+        uploader.sendJSON(["type": "ask_cancel"])
+        return
+      }
       speaker.say("Bakıyorum.")
       Task { await self.ask(question) }
     }

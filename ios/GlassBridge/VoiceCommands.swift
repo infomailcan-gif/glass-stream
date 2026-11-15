@@ -130,36 +130,59 @@ final class VoiceCommands: NSObject {
 
   // MARK: - Komut algilama
 
+  /// Sohbet modu: yapay zeka katmani aciksa "Claude" demeye gerek yok; her cumle soru olur.
+  var conversationMode = false
+
   private func handle(_ raw: String, isFinal: Bool) {
     onHeard?(raw)
     let t = Self.normalize(raw)
+    let words = t.split(whereSeparator: { $0 == " " }).count
 
-    // "Claude, ..." sorusu: anahtar kelimeden sonrasini topla, 1.3 sn sessizlikte gonder
-    if let range = Self.claudeRange(in: t) {
-      let q = String(t[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
-      askBuffer = q
-      silenceTimer?.invalidate()
-      silenceTimer = Timer.scheduledTimer(withTimeInterval: isFinal ? 0.1 : 1.3, repeats: false) { [weak self] _ in
-        Task { @MainActor in self?.flushAsk(raw) }
+    // 1) Kisa komutlar (uzun cumlelerde yanlis tetiklenmesin diye en fazla 6 kelime)
+    if words <= 6 {
+      let ai = t.contains("yapay zeka") || t.contains("katman")
+      let rec = t.contains("kayd") || t.contains("kayit") || t.contains("video")
+      let on = ["calistir", "ac", "baslat", "aktif"].contains { t.contains($0) }
+      let off = ["kapat", "durdur", "bitir", "kes"].contains { t.contains($0) }
+
+      var cmd: VoiceCommand?
+      if ai && off { cmd = .aiOff } else if ai && on { cmd = .aiOn }
+      else if rec && off { cmd = .recordStop } else if rec && on { cmd = .recordStart }
+      if let cmd {
+        askBuffer = nil
+        silenceTimer?.invalidate()
+        fire(cmd, raw)
+        return
       }
-      return
     }
 
-    let ai = t.contains("yapay zeka") || t.contains("katman")
-    let rec = t.contains("kayd") || t.contains("kayit") || t.contains("video")
-    let on = ["calistir", "ac", "baslat", "aktif"].contains { t.contains($0) }
-    let off = ["kapat", "durdur", "bitir", "kes"].contains { t.contains($0) }
+    // 2) "Claude, ..." -> anahtar kelimeden sonrasi; sohbet modunda -> cumlenin tamami
+    var question: String?
+    if let range = Self.claudeRange(in: t) {
+      // normalize karakter karakter eslesir: ayni konumdan ORIJINAL (Turkce karakterli) metni al
+      let offset = t.distance(from: t.startIndex, to: range.upperBound)
+      question = String(raw.dropFirst(min(offset, raw.count)))
+    } else if conversationMode {
+      question = raw
+    }
+    guard let q = question?.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)) else { return }
 
-    var cmd: VoiceCommand?
-    if ai && off { cmd = .aiOff } else if ai && on { cmd = .aiOn }
-    else if rec && off { cmd = .recordStop } else if rec && on { cmd = .recordStart }
-
-    if let cmd { fire(cmd, raw) }
+    askBuffer = q
+    silenceTimer?.invalidate()
+    // Kullanici susunca gonder (sohbet modunda biraz daha uzun bekle; cumle ortasinda kesilmesin)
+    let wait = isFinal ? 0.1 : (conversationMode ? 1.5 : 1.3)
+    silenceTimer = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
+      Task { @MainActor in self?.flushAsk(raw) }
+    }
   }
 
   private func flushAsk(_ raw: String) {
     guard let q = askBuffer, !q.isEmpty else { return }
     askBuffer = nil
+    // Sohbet modunda tek kelimelik gurultuleri ("hmm", "evet") gonderme
+    let stopWords: Set<String> = ["sus", "dur", "yeter", "kes"]
+    if conversationMode && Self.claudeRange(in: Self.normalize(raw)) == nil
+      && q.split(separator: " ").count < 2 && !stopWords.contains(Self.normalize(q)) { beginTask(); return }
     fire(.ask(q), raw)
   }
 
