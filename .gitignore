@@ -13,3 +13,4 @@ vision/faces/
 vision/ppe.json
 vision/objects.json
 vision/recordings/
+vision/assistant_prompt.txt

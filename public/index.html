@@ -57,6 +57,16 @@
   </main>
   <aside>
     <div>
+      <h2>Claude asistan</h2>
+      <div id="chat" style="display:flex;flex-direction:column;gap:8px;max-height:340px;overflow:auto;font-size:13px"></div>
+      <form id="askForm" style="display:flex;gap:6px;margin-top:8px">
+        <input id="askInput" placeholder="Soru yaz… ('ekran' geçerse PC ekranına bakar)" autocomplete="off"
+          style="flex:1;min-width:0;background:#202328;color:var(--fg);border:1px solid #333;border-radius:6px;padding:6px 8px">
+        <button>Sor</button>
+      </form>
+      <p style="color:var(--muted);font-size:12px;margin:6px 0 0">Sesli: “Claude, …” · “Claude, yeni konu” · “Claude, sus”</p>
+    </div>
+    <div>
       <h2>Sayaçlar</h2>
       <div class="counts" id="counts">
         <div class="card"><b id="cVisible">0</b><span>Şu an görünen</span></div>
@@ -247,6 +257,50 @@ function renderObjNow(objs, ms) {
   objNow.textContent = e.length ? "Şu an: " + e.map(([k, v]) => (v > 1 ? `${k} ×${v}` : k)).join(", ") + (ms ? ` · ${ms} ms` : "") : "";
 }
 
+// ---- Claude sohbet ----
+let curAnswer = null;
+function esc(s) { return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+function renderAnswer(text) {
+  // ``` bloklarini kod kutusu olarak goster, gerisi duz metin
+  return text.split(/```/).map((part, i) => {
+    if (i % 2) {
+      const code = part.replace(/^[a-zA-Z0-9]*\n/, "");
+      return `<pre style="background:#0b0c0e;border:1px solid #333;border-radius:6px;padding:6px;overflow:auto;white-space:pre-wrap;margin:4px 0"><code>${esc(code)}</code></pre>`;
+    }
+    return `<span style="white-space:pre-wrap">${esc(part)}</span>`;
+  }).join("");
+}
+function onAssistant(m) {
+  if (m.event === "question") {
+    const q = document.createElement("div");
+    q.style.cssText = "align-self:flex-end;background:#1d3557;border-radius:8px;padding:6px 8px;max-width:95%";
+    q.innerHTML = (m.thumb ? `<img src="data:image/jpeg;base64,${m.thumb}" style="display:block;max-width:100%;border-radius:4px;margin-bottom:4px">` : "") +
+      `<b>${esc(m.text)}</b><div style="font-size:11px;color:var(--muted)">görüntü: ${m.image}</div>`;
+    chat.append(q);
+    curAnswer = document.createElement("div");
+    curAnswer.style.cssText = "background:#202328;border-radius:8px;padding:6px 8px";
+    curAnswer.innerHTML = `<span style="color:var(--muted)">Claude düşünüyor…</span>`;
+    chat.append(curAnswer);
+  } else if ((m.event === "delta" || m.event === "done") && curAnswer) {
+    curAnswer.innerHTML = renderAnswer(m.text || "") +
+      (m.event === "done" && m.total_s ? `<div style="font-size:11px;color:var(--muted)">ilk ses ${m.first_s ?? "–"} sn · toplam ${m.total_s} sn</div>` : "");
+    if (m.event === "done") curAnswer = null;
+  } else if (m.event === "error") {
+    const e = document.createElement("div");
+    e.style.cssText = "color:var(--bad);font-size:12px"; e.textContent = "Hata: " + m.text;
+    chat.append(e);
+  } else if (m.event === "reset") {
+    chat.innerHTML = `<div style="color:var(--muted)">— yeni konu —</div>`;
+  }
+  chat.scrollTop = chat.scrollHeight;
+}
+askForm.onsubmit = (e) => {
+  e.preventDefault();
+  const t = askInput.value.trim();
+  if (t) sendCmd({ type: "ask", text: t, source: "web" });
+  askInput.value = "";
+};
+
 // ---- Yapay zeka katmani + kayit ----
 let aiOn = true, recActive = false;
 function sendCmd(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
@@ -343,6 +397,7 @@ function connect() {
       else if (m.type === "ai_state") onAiState(m);
       else if (m.type === "recording") onRecording(m);
       else if (m.type === "voice") onAnnounce(`🎤 "${m.text}"`);
+      else if (m.type === "assistant" && m.event) onAssistant(m);
       else if (m.type === "announce") onAnnounce(m.text);
       return;
     }

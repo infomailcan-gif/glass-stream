@@ -429,9 +429,13 @@ def _box(xyxy, w: int, h: int, label: str, color: str, small: bool = False) -> d
 def run(args: argparse.Namespace) -> None:
     from recorder import Recorder
 
+    from assistant import Assistant
+
     det = Detector(args)
     rec = Recorder()
-    state = {"ai": args.ai_on}  # yapay zeka katmani acik mi (sesli komutla degisir)
+    state = {"ai": args.ai_on, "frame": None}  # yapay zeka katmani acik mi; son kare (asistan icin)
+    sender = {"fn": None}  # aktif baglantinin send fonksiyonu (asistan thread'i kullanir)
+    assistant = Assistant(lambda obj: sender["fn"] and sender["fn"](obj), model=args.claude_model)
     url = args.server
     while True:
         try:
@@ -444,7 +448,12 @@ def run(args: argparse.Namespace) -> None:
 
                 def send(obj: dict) -> None:
                     with send_lock:
-                        ws.send(json.dumps(obj, ensure_ascii=False))
+                        try:
+                            ws.send(json.dumps(obj, ensure_ascii=False))
+                        except Exception:
+                            pass  # baglanti kapandiysa (asistan thread'i) sessizce gec
+
+                sender["fn"] = send
 
                 def say(text: str) -> None:
                     print(f"[vision] anons: {text}")
@@ -503,6 +512,11 @@ def run(args: argparse.Namespace) -> None:
                                     ok, msg = rec.stop()
                                 say(msg)
                                 send_state()
+                            elif t == "ask":  # Claude'a soru (sesli komut veya web)
+                                print(f"[asistan] soru: {cmd.get('text', '')[:120]}")
+                                assistant.ask(cmd.get("text", ""), cmd.get("photo"), state["frame"])
+                            elif t == "ask_cancel":
+                                assistant.cancel()
                             elif t == "hello":
                                 send_config()
                     finally:
@@ -518,6 +532,7 @@ def run(args: argparse.Namespace) -> None:
                     frame = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
                     if frame is None:
                         continue
+                    state["frame"] = frame
                     t = time.time()
                     if state["ai"]:
                         result, announcements = det.process(frame)
@@ -549,6 +564,7 @@ def run(args: argparse.Namespace) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Glass Stream goruntu isleme servisi (ISG)")
     ap.add_argument("--server", default="ws://localhost:8000/vision")
+    ap.add_argument("--claude-model", default="sonnet", help="Claude Code modeli: sonnet | haiku | opus")
     ap.add_argument("--ai-off", dest="ai_on", action="store_false",
                     help="yapay zeka katmani kapali baslasin (sesli komutla acilir)")
     ap.add_argument("--model", default="ppe_sh17m.pt", help="SH17 KKD modeli (vision/models icinde)")
