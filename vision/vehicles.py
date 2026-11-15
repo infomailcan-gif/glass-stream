@@ -70,6 +70,13 @@ def color_name(crop: np.ndarray) -> str | None:
     return "pembe"
 
 
+def _iou(a, b) -> float:
+    x1, y1, x2, y2 = max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    ua = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / ua if ua > 0 else 0.0
+
+
 @dataclass
 class Vehicle:
     first_seen: float
@@ -81,6 +88,7 @@ class Vehicle:
     best_crop: np.ndarray | None = None
     best_area: float = 0.0
     logged: bool = False
+    last_box: tuple | None = None
 
     @property
     def vtype(self) -> str:
@@ -124,6 +132,7 @@ class VehicleTracker:
     # ------------------------------------------------------------------
     def update(self, frame: np.ndarray, now: float) -> None:
         r = self.model.track(frame, persist=True, classes=list(TYPES), conf=self.conf,
+                             tracker=str(HERE / "tracker_vehicles.yaml"),
                              device=self.device, verbose=False, half=self.device == 0)[0]
         self.current = []
         if r.boxes is None or r.boxes.id is None:
@@ -135,6 +144,12 @@ class VehicleTracker:
             v = self.vehicles.get(tid)
             if v is None:
                 v = self.vehicles[tid] = Vehicle(first_seen=now)
+                # Takip numarasi degisti mi? (bas hareketi) Az once kaybolan, ayni yerdeki kayitli arac = ayni arac
+                for o in self.vehicles.values():
+                    if o is not v and o.logged and o.last_box and now - o.last_seen < 2.5                             and _iou(box, o.last_box) > 0.3:
+                        v.logged = True
+                        break
+            v.last_box = box
             v.frames += 1
             v.last_seen = now
             v.types[TYPES.get(c, "araç")] += 1
@@ -162,12 +177,20 @@ class VehicleTracker:
             if best is not None:
                 self.vehicles[best].plates[text] += 1
 
-    def plate_seen(self, text: str, xyxy, frame: np.ndarray, now: float) -> dict | None:
-        """Her plaka okumasi. 5 sn icinde 2 kez ayni okunursa plaka gunlugune yazar
-        (ayni plaka 10 dk icinde tekrar yazilmaz). Bir aracin icindeyse aracin turu/rengi eklenir."""
-        hits = [t for t in self.plate_hits.get(text, []) if now - t < 5] + [now]
+    def plate_seen(self, text: str, xyxy, frame: np.ndarray, now: float, conf: float = 1.0) -> dict | None:
+        """Her plaka okumasi. Gunluge yalnizca su durumda yazilir:
+        - okunan yazi gecerli bir Turk plakasi (il kodu 01-81, harf/rakam duzeni) ve degisiklik gerektirmiyor,
+        - OCR guveni yuksek (>= 0.8),
+        - 6 sn icinde ayni plaka en az 3 kez okundu.
+        Ayni plaka 10 dk icinde tekrar yazilmaz. Bir aracin icindeyse aracin turu/rengi eklenir."""
+        from plates import turkish_fix
+
+        fixed = turkish_fix(text)
+        if not fixed or fixed[0] != text or conf < 0.8:
+            return None  # yanlis okuma (gurultu, yazi, tabela) gunluge girmesin
+        hits = [t for t in self.plate_hits.get(text, []) if now - t < 6] + [now]
         self.plate_hits[text] = hits
-        if len(hits) < 2 or not self.log_plates or now - self.recent_plates.get(text, 0) < 600:
+        if len(hits) < 3 or not self.log_plates or now - self.recent_plates.get(text, 0) < 600:
             return None
         self.recent_plates[text] = now
         cx, cy = (xyxy[0] + xyxy[2]) / 2, (xyxy[1] + xyxy[3]) / 2
@@ -215,8 +238,6 @@ class VehicleTracker:
             ready = v.frames >= 3 and v.best_crop is not None and v.best_area >= 24 * 24
             if not v.logged and ready and self.log_vehicles:
                 v.logged = True
-                if self._seen_recently(v, now):
-                    continue  # ayni (park halindeki) arac kisa sure once yazildi; takip numarasi degisti
                 e = self._write(v, v.plate, now)
                 entries.append(e)
                 if self.speak:

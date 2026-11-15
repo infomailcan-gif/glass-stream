@@ -335,8 +335,8 @@ class Detector:
                 for b, tid in zip(pres.boxes.xyxy.cpu().numpy(), pres.boxes.id.int().cpu().tolist()):
                     persons.append((tid, tuple(float(v) for v in b)))
         lap("kisi")
-        # KKD parcalari her 2 karede bir (sayim sirasinda her kare); arada son sonuc kullanilir
-        ppe_now = self.counting or self.frame_i % 2 == 0 or self.person_model is None
+        # KKD parcalari her 2 karede bir; arada son sonuc kullanilir (sayimda da: hiz icin)
+        ppe_now = self.frame_i % 2 == 0 or self.person_model is None
         if self.enabled["ppe"] and not ppe_now:
             parts = {k: list(v) for k, v in getattr(self, "_last_parts", {}).items()}
         if self.enabled["ppe"] and ppe_now:
@@ -532,8 +532,8 @@ class Detector:
             pboxes, pann, plate_captures, preads = self.plates.poll()
             if vehicles_on and preads:
                 self.vehicles.attach_plates(preads)
-            for xyxy_, text_, _c in preads:  # her plaka (araca bagli olmasa da) gunluge
-                e = self.vehicles.plate_seen(text_, xyxy_, frame, now)
+            for xyxy_, text_, conf_ in preads:  # her plaka (araca bagli olmasa da) gunluge
+                e = self.vehicles.plate_seen(text_, xyxy_, frame, now, conf_)
                 if e:
                     vehicle_log_extra.append(e)
             for xyxy, label, wanted in pboxes:
@@ -952,7 +952,7 @@ def main() -> None:
     ap.add_argument("--model", default="ppe_sh17x.pt", help="SH17 KKD modeli (vision/models icinde)")
     ap.add_argument("--conf", type=float, default=0.35, help="tespit esigi")
     ap.add_argument("--min-height", type=float, default=0.12, help="sayilacak kisinin min. yuksekligi (kare orani)")
-    ap.add_argument("--count-imgsz", type=int, default=960, help="sayim sirasinda kisi modeli cozunurlugu")
+    ap.add_argument("--count-imgsz", type=int, default=800, help="sayim sirasinda kisi modeli cozunurlugu")
     ap.add_argument("--noface-frames", type=int, default=25, help="yuz gorunmeden saymak icin gereken kafa karesi")
     ap.add_argument("--ppe-frames", type=int, default=8, help="KKD kararini vermek icin kontrol edilen kare")
     ap.add_argument("--ppe-ratio", type=float, default=0.3, help="KKD 'var' sayilmasi icin gorulme orani")
