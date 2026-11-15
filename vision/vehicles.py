@@ -220,7 +220,10 @@ class VehicleTracker:
                 crop = cv2.resize(crop, None, fx=k, fy=k)
             cv2.imwrite(str(folder / name), crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
             img = f"/vehicles/{day}/{name}"
-        e = {"time": now, "type": v.vtype, "color": v.color, "plate": pretty(plate) if plate else None, "image": img}
+        import place
+
+        e = {"time": now, "type": v.vtype, "color": v.color, "plate": pretty(plate) if plate else None, "image": img,
+             **place.fields()}
         with open(folder / "log.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(e, ensure_ascii=False) + "\n")
         return e

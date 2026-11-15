@@ -1,16 +1,31 @@
 import SwiftUI
 
-/// Bilgi Islem sekmesi: donanim taramalari, hata analizleri, QR envanter karti.
+/// BT sekmesi: bilgi islem (tarama, hata) ve EKG ayri bolumler; gecmis ture gore filtrelenir.
 struct ITView: View {
   @Bindable var model: BridgeModel
   @State private var open: BridgeModel.ITRecord?
+  @State private var filter = "all"
+
+  private var filtered: [BridgeModel.ITRecord] {
+    filter == "all" ? model.itHistory : model.itHistory.filter { $0.kind == filter }
+  }
 
   var body: some View {
-    Page(title: "Bilgi İşlem") {
-      Card {
+    Page(title: "BT ve EKG") {
+      Card(title: "Bilgi işlem") {
         ControlRow(icon: "server.rack", title: "Bilgi işlem modu",
-                   detail: model.itActive ? "Cihaza bir saniye sabit bakınca tarar" : "Kapalı",
+                   detail: model.itActive ? "Açık · tara de ya da düğmeye bas" : "Kapalı",
                    isOn: model.itActive, tint: Theme.steel) { model.setIT(!model.itActive) }
+        if model.itActive {
+          Toggle(isOn: Binding(get: { model.itAuto }, set: { model.setITAuto($0) })) {
+            VStack(alignment: .leading, spacing: 2) {
+              Text("Bakınca kendiliğinden tara").foregroundStyle(Theme.text)
+              Text("Açıksa cihaza 1 sn sabit bakınca fotoğraf çekip tarar.")
+                .font(.footnote).foregroundStyle(Theme.muted)
+            }
+          }
+          .tint(Theme.steel)
+        }
         HStack(spacing: 8) {
           ActionChip(title: "Tara", icon: "viewfinder") {
             Task { await model.sendITScan() }
@@ -21,16 +36,29 @@ struct ITView: View {
           ActionChip(title: "PC hatası", icon: "desktopcomputer") {
             model.itError(pc: true)
           }
-          ActionChip(title: "EKG", icon: "waveform.path.ecg") {
-            model.sendECG()
-          }
         }
-        Text("Sesli: “bilgi işlem modunu başlat”, “tara”, “bu hata ne”, “bilgisayarımdaki hata ne”, “bu EKG'yi yorumla”.")
+        Text("Sesli: “tara”, “bu hata ne”, “bilgisayarımdaki hata ne”. Tara ve hata komutları yalnızca bunları söyleyince fotoğraf çeker.")
           .font(.footnote).foregroundStyle(Theme.muted)
       }
 
+      Card(title: "EKG") {
+        Button { model.sendECG() } label: {
+          Label("EKG'yi yorumla", systemImage: "waveform.path.ecg")
+            .fontWeight(.semibold).frame(maxWidth: .infinity).padding(.vertical, 12)
+            .foregroundStyle(Theme.text)
+            .background(Theme.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        Text("Kâğıda düz ve yakından bak. Sesli: “bu EKG'yi yorumla”. Önce kısa sesli özet, ardından ayrıntılı yorum gelir. Tıbbi tanı yerine geçmez.")
+          .font(.footnote).foregroundStyle(Theme.muted)
+      }
+
+      if let r = model.itCurrent {
+        ITCard(record: r, imageURL: model.httpURL(r.image))
+      }
+
       if let qr = model.itQR {
-        Card(title: "QR") {
+        Card(title: "Son okunan QR") {
           Text(qr.0).font(.headline).foregroundStyle(Theme.text)
           if let item = qr.1 {
             ForEach(["ad", "konum", "ip", "not"], id: \.self) { k in
@@ -38,19 +66,49 @@ struct ITView: View {
                 LabeledContent(k.capitalized, value: v).font(.subheadline)
               }
             }
-          } else {
-            Text("Envanterde kayıt yoksa sadece kod gösterilir.").font(.footnote).foregroundStyle(Theme.muted)
           }
         }
       }
 
-      if let r = model.itCurrent {
-        ITCard(record: r, imageURL: model.httpURL(r.image))
+      Card(title: "Geçmiş") {
+        Picker("Tür", selection: $filter) {
+          Text("Tümü").tag("all")
+          Text("Donanım").tag("hw")
+          Text("Hata").tag("error")
+          Text("EKG").tag("ecg")
+        }
+        .pickerStyle(.segmented)
+        if filtered.isEmpty {
+          Text("Bu türde kayıt yok.").font(.subheadline).foregroundStyle(Theme.muted)
+        }
+        ForEach(filtered) { r in
+          Button { open = r } label: {
+            HStack(spacing: 12) {
+              AsyncImage(url: model.httpURL(r.image)) { $0.resizable().scaledToFill() } placeholder: { Theme.raised }
+                .frame(width: 56, height: 56)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+              VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                  KindBadge(kind: r.kind)
+                  if let q = r.qr { Text(q).font(.caption.weight(.semibold)).foregroundStyle(Theme.text) }
+                  Spacer()
+                  Text(Date(timeIntervalSince1970: r.time).formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption).foregroundStyle(Theme.muted)
+                }
+                Text(r.summary).font(.footnote).foregroundStyle(Theme.muted).lineLimit(2)
+                if let p = r.place { Label(p, systemImage: "mappin").font(.caption).foregroundStyle(Theme.muted) }
+              }
+            }
+            .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          if r.id != filtered.last?.id { Divider().overlay(Theme.line) }
+        }
       }
 
       Card(title: "Okunan QR kodlar") {
         if model.qrHistory.isEmpty {
-          Text("Okunan QR kodlar saat ve fotoğrafıyla burada listelenir.")
+          Text("Okunan QR kodlar saat, yer ve fotoğrafıyla burada listelenir.")
             .font(.subheadline).foregroundStyle(Theme.muted)
         }
         ForEach(model.qrHistory.prefix(30)) { q in
@@ -64,46 +122,25 @@ struct ITView: View {
                 Text([q.place, q.ip.map { "IP " + $0 }].compactMap { $0 }.joined(separator: " · "))
                   .font(.footnote).foregroundStyle(Theme.muted)
               }
-              Text(Date(timeIntervalSince1970: q.time).formatted(date: .abbreviated, time: .shortened))
+              Text([Date(timeIntervalSince1970: q.time).formatted(date: .abbreviated, time: .shortened), q.where_]
+                   .compactMap { $0 }.joined(separator: " · "))
                 .font(.caption).foregroundStyle(Theme.muted)
             }
             Spacer()
           }
         }
       }
-
-      Card(title: "Geçmiş") {
-        if model.itHistory.isEmpty {
-          Text("Henüz tarama yok.").font(.subheadline).foregroundStyle(Theme.muted)
-        }
-        ForEach(model.itHistory) { r in
-          Button { open = r } label: {
-            HStack(spacing: 12) {
-              AsyncImage(url: model.httpURL(r.image)) { $0.resizable().scaledToFill() } placeholder: { Theme.raised }
-                .frame(width: 56, height: 56)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-              VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                  KindBadge(kind: r.kind)
-                  if let q = r.qr { Text(q).font(.caption.weight(.semibold)).foregroundStyle(Theme.text) }
-                  Spacer()
-                  Text(Date(timeIntervalSince1970: r.time).formatted(date: .omitted, time: .shortened))
-                    .font(.caption).foregroundStyle(Theme.muted)
-                }
-                Text(r.summary).font(.footnote).foregroundStyle(Theme.muted).lineLimit(2)
-              }
-            }
-            .contentShape(Rectangle())
-          }
-          .buttonStyle(.plain)
-          if r.id != model.itHistory.last?.id { Divider().overlay(Theme.line) }
-        }
-      }
     }
     .sheet(item: $open) { r in
-      ScrollView { ITCard(record: r, imageURL: model.httpURL(r.image)).padding(16) }
-        .background(Theme.ink)
-        .presentationDragIndicator(.visible)
+      ScrollView {
+        VStack(alignment: .leading, spacing: 10) {
+          ITCard(record: r, imageURL: model.httpURL(r.image))
+          if let url = model.httpURL(r.image) { SaveImageButton(url: url, title: r.summary) }
+        }
+        .padding(16)
+      }
+      .background(Theme.ink)
+      .presentationDragIndicator(.visible)
     }
   }
 }

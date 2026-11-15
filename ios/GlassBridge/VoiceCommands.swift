@@ -7,7 +7,8 @@ import Speech
 ///   "yapay zeka katmanini calistir / ac / baslat"  -> .aiOn
 ///   "yapay zeka katmanini kapat / durdur"           -> .aiOff
 ///   "kaydi baslat" / "kaydi durdur"                 -> .recordStart / .recordStop
-///   "Claude, <soru>"                                -> .ask(soru)  (susunca gonderilir)
+///   "Claude, <soru>" / "Asistan, <soru>"            -> .ask(soru)  (susunca gonderilir)
+///      Cevaptan sonra 12 sn "Claude" demeden devam edilebilir; diger konusmalar YOK SAYILIR.
 ///   "bilgi islem modunu baslat / kapat"             -> .itOn / .itOff
 ///   "tara"                                          -> .itScan (donanim taramasi)
 ///   "bu hata ne" / "hatayi soyle"                   -> .itError(pc: false)  gozluk fotografi
@@ -137,8 +138,14 @@ final class VoiceCommands: NSObject {
 
   // MARK: - Komut algilama
 
-  /// Sohbet modu: yapay zeka katmani aciksa "Claude" demeye gerek yok; her cumle soru olur.
-  var conversationMode = false
+  /// Claude cevap verdikten sonra kisa bir sure "Claude" demeden devam sorusu sorulabilir.
+  /// (Eskiden yapay zeka katmani acikken HER cumle soru sayiliyordu; bu kaldirildi.)
+  private var followUpUntil = Date.distantPast
+  private var conversationMode: Bool { Date() < followUpUntil }
+
+  func allowFollowUp(seconds: Double) {
+    followUpUntil = Date().addingTimeInterval(seconds)
+  }
 
   private func handle(_ raw: String, isFinal: Bool) {
     onHeard?(raw)
@@ -185,15 +192,18 @@ final class VoiceCommands: NSObject {
       let on = ["calistir", "ac", "baslat", "aktif"].contains { t.contains($0) }
       let off = ["kapat", "durdur", "bitir"].contains { t.contains($0) }
       var cmd: VoiceCommand?
-      if tokens.contains(where: { $0.hasPrefix("ekg") || $0.hasPrefix("ecg") || $0.hasPrefix("elektrokardiyo") }) {
+      let asks = ["ne", "nedir", "neden", "soyle", "bak", "coz", "oku", "yorumla", "incele", "analiz", "anlat"]
+      let asking = tokens.contains(where: { w in asks.contains { w == $0 || w.hasPrefix($0) && $0.count > 2 } })
+      if tokens.contains(where: { $0.hasPrefix("ekg") || $0.hasPrefix("ecg") || $0.hasPrefix("elektrokardiyo") })
+        && (asking || words <= 2) {
         cmd = .ecg  // "bu EKG'yi yorumla", "EKG'ye bak"
       } else if t.contains("bilgi islem") || t.contains("bilgiislem") {
         if off { cmd = .itOff } else if on { cmd = .itOn }
-      } else if tokens.contains("tara") || tokens.contains("taramayi") || t.hasPrefix("tara") {
-        cmd = .itScan
-      } else if tokens.contains(where: { $0.hasPrefix("hata") }) {
-        let pc = tokens.contains(where: { $0.hasPrefix("bilgisayarim") || $0 == "benim" || $0.hasPrefix("ekranim") })
-        cmd = .itError(pc: pc, text: raw)
+      } else if words <= 3 && (tokens.contains("tara") || tokens.contains("taramayi") || t.hasPrefix("tara")) {
+        cmd = .itScan  // "tara", "bunu tara", "taramayi baslat"
+      } else if tokens.contains(where: { $0.hasPrefix("hata") }) && asking {
+        let pc = tokens.contains(where: { $0.hasPrefix("bilgisayar") || $0 == "benim" || $0.hasPrefix("ekranim") || $0 == "pc" })
+        cmd = .itError(pc: pc, text: raw)  // "bu hata ne", "bilgisayarimdaki hata ne"
       }
       if let cmd {
         askBuffer = nil
@@ -272,7 +282,7 @@ final class VoiceCommands: NSObject {
 
   /// "claude", "klod", "klot", "clod" gibi duyulma bicimleri
   static func claudeRange(in t: String) -> Range<String.Index>? {
-    for key in ["claude", "klod", "klot", "clod", "kload", "cloud"] {
+    for key in ["claude", "klod", "klot", "clod", "kload", "cloud", "asistan"] {
       if let r = t.range(of: key) { return r }
     }
     return nil

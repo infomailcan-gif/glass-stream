@@ -181,7 +181,10 @@ final class BridgeModel {
     self.serverURL = UserDefaults.standard.string(forKey: "serverURL") ?? "ws://192.168.1.100:8000/ingest"
 
     uploader.onConnectionChange = { [weak self] connected in
-      Task { @MainActor in self?.socketConnected = connected }
+      Task { @MainActor in
+        self?.socketConnected = connected
+        if connected { self?.startLocationReports() }
+      }
     }
     uploader.onText = { [weak self] text in
       Task { @MainActor in self?.handleServerMessage(text) }
@@ -501,6 +504,8 @@ final class BridgeModel {
     let id: Int
     let file: String
     let time: Double
+    var face: Bool = true
+    var place: String? = nil
   }
   var faces: [FaceItem] = []
 
@@ -610,8 +615,6 @@ final class BridgeModel {
       if let say = obj["text"] as? String { announce(say) }
     case "ai_state":
       aiOn = obj["on"] as? Bool
-      // Yapay zeka katmani acikken Claude sohbet modunda: "Claude" demeden her cumle soru olur
-      voice.conversationMode = aiOn ?? false
     case "recording":
       recordingActive = obj["active"] as? Bool ?? false
       recordingSince = obj["since"] as? Double
@@ -637,6 +640,7 @@ final class BridgeModel {
       watchlist = obj["plates"] as? [String] ?? []
     case "it_state":
       itActive = obj["active"] as? Bool ?? false
+      itAuto = obj["auto"] as? Bool ?? false
     case "it_event":
       guard let id = obj["id"] as? String else { break }
       if obj["event"] as? String == "start" {
@@ -655,7 +659,8 @@ final class BridgeModel {
       if let items = obj["items"] as? [[String: Any]] {
         vehicleLog = items.map { v in
           VehicleEntry(time: v["time"] as? Double ?? 0, type: v["type"] as? String ?? "araç",
-                       color: v["color"] as? String, plate: v["plate"] as? String, image: v["image"] as? String)
+                       color: v["color"] as? String, plate: v["plate"] as? String, image: v["image"] as? String,
+                       place: v["place"] as? String)
         }
       }
     case "count_state":
@@ -672,14 +677,15 @@ final class BridgeModel {
           let item = q["item"] as? [String: Any]
           return QREntry(time: q["time"] as? Double ?? 0, text: q["text"] as? String ?? "",
                          name: item?["ad"] as? String, place: item?["konum"] as? String,
-                         ip: item?["ip"] as? String, image: q["image"] as? String)
+                         ip: item?["ip"] as? String, image: q["image"] as? String, where_: q["place"] as? String)
         }
       }
     case "faces_list":
       if let items = obj["items"] as? [[String: Any]] {
         faces = items.compactMap { f in
           guard let id = f["id"] as? Int, let file = f["file"] as? String else { return nil }
-          return FaceItem(id: id, file: file, time: f["time"] as? Double ?? 0)
+          return FaceItem(id: id, file: file, time: f["time"] as? Double ?? 0,
+                          face: f["face"] as? Bool ?? true, place: f["place"] as? String)
         }
       }
     case "models":
@@ -716,6 +722,7 @@ final class BridgeModel {
       if event == "question" { lastQuestion = obj["text"] as? String; assistantText = nil }
       if event == "delta" || event == "done", let t = obj["text"] as? String { assistantText = t }
       if let say = obj["say"] as? String, !say.isEmpty { announce(say) }
+      if event == "done" { voice.allowFollowUp(seconds: 12) }
     default:
       break
     }
@@ -785,10 +792,19 @@ final class BridgeModel {
   /// Claude'a soru: gozlukle fotograf cek (yayin aciksa), soruyla birlikte PC'ye gonder
   func ask(_ question: String) async {
     var payload: [String: Any] = ["type": "ask", "text": question, "source": "voice"]
-    if let photo = await capturePhoto(), let small = Self.shrink(photo, maxSide: 1600) {
+    if Self.needsPhoto(question), let photo = await capturePhoto(), let small = Self.shrink(photo, maxSide: 1600) {
       payload["photo"] = small.base64EncodedString()
     }
     uploader.sendJSON(payload)
+  }
+
+  /// Soru gordugumuz bir seyle mi ilgili? ("bu ne", "suna bak", "ne yaziyor"...) Degilse foto cekme.
+  static func needsPhoto(_ q: String) -> Bool {
+    let t = " " + VoiceCommands.normalize(q) + " "
+    let keys = [" bu ", " bunu", " bunun", " buna", " su ", " sunu", " sunun", " suna", " bak", " gor", " oku",
+                " yaziyor", " ekran", " resim", " foto", " goruntu", " karsimda", " onumde", " nedir", " ne bu",
+                " hangi", " kac tane", " say "]
+    return keys.contains { t.contains($0) }
   }
 
   // MARK: - Fotograf
@@ -854,7 +870,7 @@ final class BridgeModel {
       }.joined(separator: " · ")
       faces = (o["faces"] as? [[String: Any]] ?? []).compactMap { f in
         guard let id = f["id"] as? Int, let file = f["file"] as? String else { return nil }
-        return FaceItem(id: id, file: file, time: 0)
+        return FaceItem(id: id, file: file, time: f["time"] as? Double ?? 0, face: f["face"] as? Bool ?? true)
       }
     }
   }
@@ -902,6 +918,7 @@ final class BridgeModel {
     let place: String?
     let ip: String?
     let image: String?
+    let where_: String?
     var id: String { "\(time)-\(text)" }
   }
 
@@ -915,6 +932,7 @@ final class BridgeModel {
     let color: String?
     let plate: String?
     let image: String?
+    let place: String?
     var id: String { "\(time)-\(plate ?? type)" }
     var title: String {
       let s = [color, type].compactMap { $0 }.joined(separator: " ")
@@ -939,6 +957,7 @@ final class BridgeModel {
     var done: Bool
     var urgent: String?
     var model: String?
+    var place: String?
 
     init(_ o: [String: Any]) {
       id = o["id"] as? String ?? UUID().uuidString
@@ -953,6 +972,7 @@ final class BridgeModel {
       done = (o["event"] as? String).map { $0 == "done" } ?? true
       urgent = o["urgent"] as? String
       model = o["model"] as? String
+      place = o["place"] as? String
     }
 
     mutating func update(_ o: [String: Any]) {
@@ -971,6 +991,7 @@ final class BridgeModel {
   }
 
   var itActive = false
+  var itAuto = false
   var itCurrent: ITRecord?
   var itHistory: [ITRecord] = []
   var itQR: (String, [String: Any]?)?
@@ -978,6 +999,31 @@ final class BridgeModel {
 
   func setIT(_ on: Bool) {
     uploader.sendJSON(["type": "it_mode", "on": on])
+  }
+
+  /// Cihaza bir saniye sabit bakinca kendiliginden tara (varsayilan kapali)
+  func setITAuto(_ on: Bool) {
+    itAuto = on
+    uploader.sendJSON(["type": "it_auto", "on": on])
+  }
+
+  // MARK: - Konum (kayitlara "nerede" bilgisi)
+
+  @ObservationIgnored private var locationTask: Task<Void, Never>?
+
+  func startLocationReports() {
+    locationTask?.cancel()
+    locationTask = Task { [weak self] in
+      while !Task.isCancelled {
+        guard let self, self.socketConnected else { return }
+        if let loc = await self.locator.current() {
+          var p: [String: Any] = ["type": "loc", "lat": loc.lat, "lon": loc.lon]
+          if let n = loc.name { p["name"] = n }
+          self.uploader.sendJSON(p)
+        }
+        try? await Task.sleep(nanoseconds: 120 * 1_000_000_000)
+      }
+    }
   }
 
   /// Donanim taramasi: gozlukle yuksek cozunurluklu foto (yoksa PC canli kareyi kullanir)

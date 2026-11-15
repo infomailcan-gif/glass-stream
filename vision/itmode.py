@@ -20,6 +20,8 @@ import io
 import json
 import re
 import threading
+
+import place
 import time
 from pathlib import Path
 
@@ -120,6 +122,7 @@ class ITMode:
         self.send = send  # JSON -> sunucu
         self.say = say  # sesli anons
         self.active = False
+        self.auto = False  # cihaza bakinca kendiliginden tara (varsayilan kapali: surekli foto cekmesin)
         self.hw = ClaudeRunner("it_hw", hw_model, HW_PROMPT, max_turns=8)
         self.err = ClaudeRunner("it_err", err_model, ERR_PROMPT, max_turns=8)
         # EKG: Opus hizli on degerlendirme (sesli) + Fable 5.2 ayrintili yorum (yedek: Opus)
@@ -143,10 +146,14 @@ class ITMode:
         if on:
             self.hw.warm()
             self.err.warm()
-        self.send({"type": "it_state", "active": on})
+        self.send(self.state())
+
+    def set_auto(self, on: bool) -> None:
+        self.auto = on
+        self.send(self.state())
 
     def state(self) -> dict:
-        return {"type": "it_state", "active": self.active}
+        return {"type": "it_state", "active": self.active, "auto": self.auto}
 
     # ---------------- QR + envanter ----------------
     def inventory(self) -> dict:
@@ -179,7 +186,8 @@ class ITMode:
             name = f"{hms}_{abs(hash(text)) % 100000}.jpg"
             (folder / name).write_bytes(img)
             image = f"/qr/{day}/{name}"
-        e = {"time": now, "text": text, "item": self.inventory().get(text.strip()), "image": image, "source": source}
+        e = {"time": now, "text": text, "item": self.inventory().get(text.strip()), "image": image, "source": source,
+             **place.fields()}
         with open(folder / "log.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(e, ensure_ascii=False) + "\n")
         self.send(self.qr_history())
@@ -224,7 +232,7 @@ class ITMode:
         (folder / f"{rid}.jpg").write_bytes(img)
         qr = self.last_qr[0] if self.last_qr and now - self.last_qr[1] < 30 else None
         rec = {"id": rid, "day": day, "kind": kind, "time": now, "source": source,
-               "image": f"/it/{day}/{rid}.jpg", "qr": qr, "summary": "", "text": ""}
+               "image": f"/it/{day}/{rid}.jpg", "qr": qr, "summary": "", "text": "", **place.fields()}
         self.send({"type": "it_event", "event": "start", **rec})
         target = self._run_ecg if kind == "ecg" else self._run
         threading.Thread(target=target, args=(kind, img, question, rec, folder), daemon=True).start()

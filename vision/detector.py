@@ -224,7 +224,7 @@ class Detector:
 
     def faces_list(self) -> dict:
         """Sayilan HER kisi + fotografi (yuz netse yuz, degilse kirpilmis goruntu)."""
-        items = [{"id": p["n"], "file": p["img"], "time": p["time"], "face": p["face"]}
+        items = [{"id": p["n"], "file": p["img"], "time": p["time"], "face": p["face"], "place": p.get("place")}
                  for p in self.people if p.get("img")]
         return {"type": "faces_list", "items": items[::-1]}
 
@@ -245,7 +245,9 @@ class Detector:
             (FACES_DIR / day).mkdir(parents=True, exist_ok=True)
             img = f"{day}/kisi_p{n:03d}_{time.strftime('%H%M%S', time.localtime(now))}.jpg"
             cv2.imwrite(str(FACES_DIR / img), crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
-        entry = {"n": n, "ident": ident, "track": tid, "img": img, "face": False, "time": now}
+        import place
+
+        entry = {"n": n, "ident": ident, "track": tid, "img": img, "face": False, "time": now, **place.fields()}
         # Kimligin yuzu zaten kaydedildiyse onu kullan
         if ident is not None:
             fi = next((i for i in self.faces.fid.identities if i.id == ident and i.face_file), None)
@@ -427,6 +429,8 @@ class Detector:
                         else:
                             self.missing_totals[item] += 1
                             word = PPE_ITEMS[item][1]
+                            if not self.counting:
+                                continue  # sayim disinda sesli uyari yok, sadece kutu
                             who = f"Kişi {t.ident}" if t.ident else "Bir kişi"
                             announcements.append(f"Dikkat, {who} {word}. {word.capitalize()} toplam {self.missing_totals[item]}.")
 
@@ -503,9 +507,8 @@ class Detector:
         if vehicles_on:
             for xyxy, label in self.vehicles.boxes():
                 boxes_out.append(_box(xyxy, W, H, label, "#6FA8DC"))
-            vl, vsay = self.vehicles.collect(now)
+            vl, _vsay = self.vehicles.collect(now)  # her araci sesli okumak cok gurultulu
             vehicle_log.extend(vl)
-            announcements.extend(vsay)
 
         visible = sum(1 for tid, _ in persons if self.tracks[tid].ident or self.tracks[tid].counted_by_track)
         return {
@@ -730,8 +733,14 @@ def run(args: argparse.Namespace) -> None:
                             elif t == "it_mode":  # {"type":"it_mode","on":true}
                                 on = bool(cmd.get("on"))
                                 itm.set_active(on)
-                                say("Bilgi işlem modu açık. Cihaza bak ya da tara de; hata için bu hata ne de." if on
+                                say("Bilgi işlem modu açık. Cihaza bakıp tara de; hata için bu hata ne de." if on
                                     else "Bilgi işlem modu kapatıldı.")
+                            elif t == "it_auto":  # cihaza bakinca kendiliginden tara
+                                itm.set_auto(bool(cmd.get("on")))
+                            elif t == "loc":  # telefonun konumu: kayitlara "nerede" bilgisi
+                                import place
+
+                                place.set_loc(cmd.get("name"), cmd.get("lat"), cmd.get("lon"))
                             elif t == "it_scan":  # donanim taramasi (telefon fotografiyla)
                                 pending["capture"] = 0.0
                                 img, src = it_image(cmd)
@@ -840,7 +849,7 @@ def run(args: argparse.Namespace) -> None:
                             f"  {p['name']} eksik: {p['missing']}" for p in c.get("ppe", []))
                     rec.feed(frame, result["boxes"], footer)
                     # Bilgi islem modu: goruntu sabitlenince telefondan yuksek cozunurluklu foto iste
-                    if itm.active and not itm.busy["hw"]:
+                    if itm.active and itm.auto and not itm.busy["hw"]:
                         if pending["capture"] and time.time() - pending["capture"] > 2.5:
                             pending["capture"] = 0.0  # telefon cevap vermedi: canli kareyle tara
                             itm.scan(frame_jpeg(frame), "canlı görüntü")

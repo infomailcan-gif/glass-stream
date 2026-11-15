@@ -62,6 +62,8 @@
 	<string>Meta gözlüğe bağlanmak için gerekli.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>Meta gözlüğe bağlanmak için gerekli.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Kayıtlardaki fotoğraf ve videoları Fotoğraflar'a kaydetmek için.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Kişi sayım oturumuna, sayımın yapıldığı yerin adını eklemek için.</string>
 	<key>NSMicrophoneUsageDescription</key>

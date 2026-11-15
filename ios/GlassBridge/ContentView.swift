@@ -472,183 +472,403 @@ struct FlowChips: View {
 
 struct RecordingsView: View {
   @Bindable var model: BridgeModel
+  @State private var section = "counts"
   @State private var playing: BridgeModel.RecFile?
   @State private var openSession: BridgeModel.CountSession?
+  @State private var detail: MediaItem?
 
   var body: some View {
-    Page(title: "Kayıtlar ve kişiler") {
-      Card(title: "Yeni kayıt") {
-        Picker("Tür", selection: $model.recordAnnotated) {
-          Text("Kutularla").tag(true)
-          Text("Ham görüntü").tag(false)
-        }
-        .pickerStyle(.segmented)
-        .disabled(model.recordingActive)
+    Page(title: "Kayıtlar") {
+      Picker("Bölüm", selection: $section) {
+        Text("Sayım").tag("counts")
+        Text("Kişi").tag("people")
+        Text("Araç").tag("cars")
+        Text("Foto").tag("photos")
+        Text("Video").tag("videos")
+      }
+      .pickerStyle(.segmented)
 
-        Button { model.toggleRecord() } label: {
-          Label(model.recordingActive ? "Kaydı durdur" : "Kaydı başlat",
-                systemImage: model.recordingActive ? "stop.circle.fill" : "record.circle")
-            .fontWeight(.semibold)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-            .foregroundStyle(model.recordingActive ? Theme.bad : Theme.text)
-            .background(Theme.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      switch section {
+      case "people": peopleSection
+      case "cars": carsSection
+      case "photos": photosSection
+      case "videos": videosSection
+      default: countsSection
+      }
+    }
+    .sheet(item: $openSession) { s in sessionSheet(s) }
+    .sheet(item: $detail) { d in MediaDetailView(item: d, url: model.httpURL(d.path)) }
+    .sheet(item: $playing) { f in
+      if let url = model.recordingURL(f) {
+        VStack(spacing: 12) {
+          VideoPlayer(player: AVPlayer(url: url))
+          SaveVideoButton(url: url).padding(.horizontal, 16).padding(.bottom, 16)
+        }
+        .background(Theme.ink)
+        .presentationDragIndicator(.visible)
+      }
+    }
+  }
+
+  // MARK: Sayim oturumlari
+
+  @ViewBuilder private var countsSection: some View {
+    if model.countActive {
+      Card(title: "Süren sayım") {
+        HStack(alignment: .firstTextBaseline) {
+          Text("\(model.totalPeople)").font(.system(size: 40, weight: .heavy)).foregroundStyle(Theme.amber)
+          Text("kişi").foregroundStyle(Theme.muted)
+          Spacer()
+          if let since = model.countSince {
+            Text(Date(timeIntervalSince1970: since), style: .timer).font(.headline).foregroundStyle(Theme.text)
+          }
+        }
+        if let loc = model.countLocation { Label(loc, systemImage: "mappin").font(.footnote).foregroundStyle(Theme.muted) }
+        Button { model.toggleCount() } label: {
+          Label("Sayımı bitir ve kaydet", systemImage: "stop.circle.fill")
+            .fontWeight(.semibold).frame(maxWidth: .infinity).padding(.vertical, 10)
+            .foregroundStyle(Theme.bad)
+            .background(Theme.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(!model.socketConnected)
-        Text("Kayıt bilgisayara yapılır. Kutulu kayıtta tarih, saat ve kişi sayısı da yazılır.")
-          .font(.footnote).foregroundStyle(Theme.muted)
       }
-
-      if model.countActive {
-        Card(title: "Süren sayım") {
-          HStack(alignment: .firstTextBaseline) {
-            Text("\(model.totalPeople)").font(.system(size: 40, weight: .heavy)).foregroundStyle(Theme.amber)
-            Text("kişi").foregroundStyle(Theme.muted)
+    }
+    Card(title: "Sayım oturumları") {
+      if model.countSessions.isEmpty {
+        Text("“Kişi saymayı başlat / bitir” ile yapılan sayımlar burada: kaç kişi, ne kadar sürdü, nerede, kimler.")
+          .font(.subheadline).foregroundStyle(Theme.muted)
+      }
+      ForEach(model.countSessions) { s in
+        Button { openSession = s } label: {
+          HStack(spacing: 12) {
+            VStack(spacing: 0) {
+              Text("\(s.total)").font(.title2.weight(.heavy)).foregroundStyle(Theme.amber)
+              Text("kişi").font(.caption2).foregroundStyle(Theme.muted)
+            }
+            .frame(minWidth: 48)
+            VStack(alignment: .leading, spacing: 2) {
+              Text(Date(timeIntervalSince1970: s.start).formatted(date: .abbreviated, time: .shortened))
+                .fontWeight(.semibold).foregroundStyle(Theme.text)
+              Text(String(format: "%.1f dakika", s.minutes) + ", \(s.faces.count) fotoğraf")
+                .font(.footnote).foregroundStyle(Theme.muted)
+              if let l = s.location { Label(l, systemImage: "mappin").font(.caption).foregroundStyle(Theme.muted).lineLimit(1) }
+              if !s.ppeText.isEmpty {
+                Text(s.ppeText).font(.footnote.weight(.semibold)).foregroundStyle(Theme.amber)
+              }
+            }
             Spacer()
-            if let since = model.countSince {
-              Text(Date(timeIntervalSince1970: since), style: .timer).font(.headline).foregroundStyle(Theme.text)
+            Image(systemName: "chevron.right").font(.footnote).foregroundStyle(Theme.muted)
+          }
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        if s.id != model.countSessions.last?.id { Divider().overlay(Theme.line) }
+      }
+    }
+  }
+
+  private func sessionSheet(_ s: BridgeModel.CountSession) -> some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 12) {
+        Text("\(s.total) kişi").font(.largeTitle.weight(.heavy)).foregroundStyle(Theme.text)
+        Text(Date(timeIntervalSince1970: s.start).formatted(date: .complete, time: .shortened))
+          .font(.subheadline).foregroundStyle(Theme.muted)
+        Text(String(format: "Süre: %.1f dakika", s.minutes)).font(.subheadline).foregroundStyle(Theme.muted)
+        if let l = s.location { Label(l, systemImage: "mappin").font(.subheadline).foregroundStyle(Theme.muted) }
+        if !s.ppeText.isEmpty { Text(s.ppeText).font(.headline).foregroundStyle(Theme.amber) }
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 10)], spacing: 10) {
+          ForEach(s.faces) { f in
+            Button {
+              openSession = nil
+              detail = MediaItem(path: "/faces/" + f.file, title: "Kişi \(f.id)",
+                                 lines: [f.time > 0 ? Self.when(f.time) : nil, s.location,
+                                         f.face ? "Yüz fotoğrafı" : "Yüzü net görülemedi, gövde fotoğrafı"])
+            } label: {
+              PhotoTile(url: model.httpURL("/faces/" + f.file), caption: "Kişi \(f.id)", size: 96)
             }
+            .buttonStyle(.plain)
           }
-          if let loc = model.countLocation { Text(loc).font(.footnote).foregroundStyle(Theme.muted) }
-          Button { model.toggleCount() } label: {
-            Label("Sayımı bitir ve kaydet", systemImage: "stop.circle.fill")
-              .fontWeight(.semibold).frame(maxWidth: .infinity).padding(.vertical, 10)
-              .foregroundStyle(Theme.bad)
-              .background(Theme.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-          }
-          .buttonStyle(.plain)
+        }
+        if s.faces.isEmpty {
+          Text("Bu sayımda fotoğraf yok.").font(.subheadline).foregroundStyle(Theme.muted)
         }
       }
+      .padding(16)
+    }
+    .background(Theme.ink)
+    .presentationDragIndicator(.visible)
+  }
 
-      Card(title: "Sayım oturumları") {
-        if model.countSessions.isEmpty {
-          Text("“Kişi saymayı başlat / bitir” ile yapılan sayımlar burada listelenir.")
-            .font(.subheadline).foregroundStyle(Theme.muted)
-        }
-        ForEach(model.countSessions) { s in
-          Button { openSession = s } label: {
-            HStack(spacing: 12) {
-              Text("\(s.total)").font(.title2.weight(.heavy)).foregroundStyle(Theme.amber).frame(minWidth: 44)
-              VStack(alignment: .leading, spacing: 2) {
-                Text(s.location ?? "Konum yok").fontWeight(.semibold).foregroundStyle(Theme.text).lineLimit(1)
-                Text(Date(timeIntervalSince1970: s.start).formatted(date: .abbreviated, time: .shortened)
-                     + " · " + String(format: "%.1f dk", s.minutes))
-                  .font(.footnote).foregroundStyle(Theme.muted)
-                if !s.ppeText.isEmpty {
-                  Text(s.ppeText).font(.footnote.weight(.semibold)).foregroundStyle(Theme.amber)
-                }
-              }
-              Spacer()
-              Image(systemName: "chevron.right").font(.footnote).foregroundStyle(Theme.muted)
-            }
-            .contentShape(Rectangle())
-          }
-          .buttonStyle(.plain)
-          if s.id != model.countSessions.last?.id { Divider().overlay(Theme.line) }
-        }
-      }
+  // MARK: Kisiler
 
-      Card(title: "Sayılan kişiler") {
-        if model.faces.isEmpty {
-          Text("Yüzü görülen kişiler burada listelenir.").font(.subheadline).foregroundStyle(Theme.muted)
-        } else {
-          LazyVGrid(columns: [GridItem(.adaptive(minimum: 76), spacing: 10)], spacing: 10) {
-            ForEach(model.faces) { f in
-              VStack(spacing: 4) {
-                AsyncImage(url: model.httpURL("/faces/" + f.file)) { img in
-                  img.resizable().scaledToFill()
-                } placeholder: {
-                  Theme.raised
-                }
-                .frame(width: 76, height: 76)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                Text("Kişi \(f.id)").font(.caption).foregroundStyle(Theme.muted)
-              }
+  @ViewBuilder private var peopleSection: some View {
+    Card(title: "Sayılan kişiler") {
+      if model.faces.isEmpty {
+        Text("Sayılan her kişi fotoğrafı, saati ve yeriyle burada görünür.").font(.subheadline).foregroundStyle(Theme.muted)
+      } else {
+        Text("\(model.faces.count) kişi").font(.footnote).foregroundStyle(Theme.muted)
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 10)], spacing: 12) {
+          ForEach(model.faces) { f in
+            Button {
+              detail = MediaItem(path: "/faces/" + f.file, title: "Kişi \(f.id)",
+                                 lines: [Self.when(f.time), f.place,
+                                         f.face ? "Yüz fotoğrafı" : "Yüzü net görülemedi, gövde fotoğrafı"])
+            } label: {
+              PhotoTile(url: model.httpURL("/faces/" + f.file), caption: "Kişi \(f.id), " + Self.hour(f.time), size: 96)
             }
+            .buttonStyle(.plain)
           }
         }
       }
+    }
+  }
 
-      Card(title: "Araç günlüğü") {
-        if model.vehicleLog.isEmpty {
-          Text("Görülen araçlar tür, renk ve plakasıyla burada listelenir.")
-            .font(.subheadline).foregroundStyle(Theme.muted)
-        }
-        ForEach(model.vehicleLog.prefix(30)) { v in
+  // MARK: Araclar ve plakalar
+
+  @ViewBuilder private var carsSection: some View {
+    Card(title: "Plakalar ve araçlar") {
+      if model.vehicleLog.isEmpty {
+        Text("Okunan her plaka ve görülen araç; türü, rengi, saati, yeri ve fotoğrafıyla burada.")
+          .font(.subheadline).foregroundStyle(Theme.muted)
+      }
+      ForEach(model.vehicleLog.prefix(60)) { v in
+        Button {
+          detail = MediaItem(path: v.image ?? "", title: v.plate ?? "Plaka okunamadı",
+                             lines: [v.title, Self.when(v.time), v.place])
+        } label: {
           HStack(spacing: 12) {
             AsyncImage(url: v.image.flatMap { model.httpURL($0) }) { $0.resizable().scaledToFill() } placeholder: { Theme.raised }
-              .frame(width: 56, height: 42)
+              .frame(width: 64, height: 48)
               .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
               Text(v.plate ?? "Plaka okunamadı").fontWeight(.semibold).foregroundStyle(Theme.text)
               Text(v.title).font(.footnote).foregroundStyle(Theme.muted)
+              if let p = v.place { Label(p, systemImage: "mappin").font(.caption).foregroundStyle(Theme.muted).lineLimit(1) }
             }
             Spacer()
-            Text(Date(timeIntervalSince1970: v.time).formatted(date: .omitted, time: .shortened))
+            Text(Date(timeIntervalSince1970: v.time).formatted(date: .abbreviated, time: .shortened))
               .font(.caption).foregroundStyle(Theme.muted)
           }
+          .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
       }
+    }
+  }
 
-      Card(title: "Kayıtlar") {
-        if model.recordings.isEmpty {
-          Text("Henüz kayıt yok.").font(.subheadline).foregroundStyle(Theme.muted)
-        }
-        ForEach(model.recordings) { f in
-          Button { playing = f } label: {
-            HStack {
-              Image(systemName: "play.rectangle").foregroundStyle(Theme.amber)
-              VStack(alignment: .leading, spacing: 2) {
-                Text(Date(timeIntervalSince1970: f.time).formatted(date: .abbreviated, time: .shortened))
-                  .foregroundStyle(Theme.text).fontWeight(.semibold)
-                Text("\(f.annotated ? "Kutularla" : "Ham"), \(String(format: "%.1f", f.mb)) MB")
-                  .font(.footnote).foregroundStyle(Theme.muted)
-              }
-              Spacer()
-              Image(systemName: "chevron.right").font(.footnote).foregroundStyle(Theme.muted)
+  // MARK: Tum fotograflar
+
+  private var allPhotos: [MediaItem] {
+    var items: [MediaItem] = []
+    items += model.faces.map {
+      MediaItem(path: "/faces/" + $0.file, title: "Kişi \($0.id)", lines: [Self.when($0.time), $0.place],
+                time: $0.time, kind: "Kişi")
+    }
+    items += model.vehicleLog.compactMap { v in
+      v.image.map {
+        MediaItem(path: $0, title: v.plate ?? v.title, lines: [v.title, Self.when(v.time), v.place], time: v.time, kind: "Araç")
+      }
+    }
+    items += model.itHistory.map { r in
+      MediaItem(path: r.image, title: ["hw": "Donanım taraması", "error": "Hata", "ecg": "EKG"][r.kind] ?? "BT",
+                lines: [r.summary, Self.when(r.time), r.place], time: r.time, kind: r.kind == "ecg" ? "EKG" : "BT")
+    }
+    items += model.qrHistory.compactMap { q in
+      q.image.map {
+        MediaItem(path: $0, title: q.name ?? q.text, lines: [q.text, Self.when(q.time), q.where_], time: q.time, kind: "QR")
+      }
+    }
+    return items.sorted { $0.time > $1.time }
+  }
+
+  @ViewBuilder private var photosSection: some View {
+    let photos = allPhotos
+    Card(title: "Tüm fotoğraflar") {
+      if photos.isEmpty {
+        Text("Kişi, araç, BT, EKG ve QR fotoğrafları burada toplanır.").font(.subheadline).foregroundStyle(Theme.muted)
+      } else {
+        Text("\(photos.count) fotoğraf. Dokununca büyür, telefona kaydedebilirsin.").font(.footnote).foregroundStyle(Theme.muted)
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 10) {
+          ForEach(photos) { p in
+            Button { detail = p } label: {
+              PhotoTile(url: model.httpURL(p.path), caption: p.kind + ", " + Self.hour(p.time), size: 100)
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
           }
-          .buttonStyle(.plain)
-          if f.id != model.recordings.last?.id { Divider().overlay(Theme.line) }
         }
       }
     }
-    .sheet(item: $openSession) { s in
-      ScrollView {
-        VStack(alignment: .leading, spacing: 12) {
-          Text("\(s.total) kişi").font(.largeTitle.weight(.heavy)).foregroundStyle(Theme.text)
-          Text([s.location, Date(timeIntervalSince1970: s.start).formatted(date: .abbreviated, time: .shortened),
-                String(format: "%.1f dk", s.minutes)].compactMap { $0 }.joined(separator: " · "))
-            .font(.subheadline).foregroundStyle(Theme.muted)
-          if !s.ppeText.isEmpty { Text(s.ppeText).font(.headline).foregroundStyle(Theme.amber) }
-          LazyVGrid(columns: [GridItem(.adaptive(minimum: 90), spacing: 10)], spacing: 10) {
-            ForEach(s.faces) { f in
-              VStack(spacing: 4) {
-                AsyncImage(url: model.httpURL("/faces/" + f.file)) { $0.resizable().scaledToFill() } placeholder: { Theme.raised }
-                  .frame(width: 90, height: 90)
-                  .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                Text("Kişi \(f.id)").font(.caption).foregroundStyle(Theme.muted)
-              }
+  }
+
+  // MARK: Videolar
+
+  @ViewBuilder private var videosSection: some View {
+    Card(title: "Yeni video kaydı") {
+      Picker("Tür", selection: $model.recordAnnotated) {
+        Text("Kutularla").tag(true)
+        Text("Ham görüntü").tag(false)
+      }
+      .pickerStyle(.segmented)
+      .disabled(model.recordingActive)
+      Button { model.toggleRecord() } label: {
+        Label(model.recordingActive ? "Kaydı durdur" : "Kaydı başlat",
+              systemImage: model.recordingActive ? "stop.circle.fill" : "record.circle")
+          .fontWeight(.semibold).frame(maxWidth: .infinity).padding(.vertical, 12)
+          .foregroundStyle(model.recordingActive ? Theme.bad : Theme.text)
+          .background(Theme.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      }
+      .buttonStyle(.plain)
+      .disabled(!model.socketConnected)
+      Text("Sesli: “kaydı başlat / durdur”. Video bilgisayara kaydedilir; buradan izleyip telefona indirebilirsin.")
+        .font(.footnote).foregroundStyle(Theme.muted)
+    }
+    Card(title: "Videolar") {
+      if model.recordings.isEmpty {
+        Text("Henüz video yok.").font(.subheadline).foregroundStyle(Theme.muted)
+      }
+      ForEach(model.recordings) { f in
+        Button { playing = f } label: {
+          HStack {
+            Image(systemName: "play.rectangle.fill").font(.title2).foregroundStyle(Theme.amber)
+            VStack(alignment: .leading, spacing: 2) {
+              Text(Date(timeIntervalSince1970: f.time).formatted(date: .abbreviated, time: .shortened))
+                .foregroundStyle(Theme.text).fontWeight(.semibold)
+              Text("\(f.annotated ? "Kutularla" : "Ham"), \(String(format: "%.1f", f.mb)) MB")
+                .font(.footnote).foregroundStyle(Theme.muted)
             }
+            Spacer()
+            Image(systemName: "chevron.right").font(.footnote).foregroundStyle(Theme.muted)
           }
-          if s.faces.isEmpty {
-            Text("Bu sayımda yüzü görülen kişi yok.").font(.subheadline).foregroundStyle(Theme.muted)
-          }
+          .contentShape(Rectangle())
         }
-        .padding(16)
-      }
-      .background(Theme.ink)
-      .presentationDragIndicator(.visible)
-    }
-    .sheet(item: $playing) { f in
-      if let url = model.recordingURL(f) {
-        VideoPlayer(player: AVPlayer(url: url))
-          .ignoresSafeArea()
-          .presentationDragIndicator(.visible)
+        .buttonStyle(.plain)
+        if f.id != model.recordings.last?.id { Divider().overlay(Theme.line) }
       }
     }
+  }
+
+  static func when(_ t: Double) -> String {
+    Date(timeIntervalSince1970: t).formatted(date: .abbreviated, time: .shortened)
+  }
+
+  static func hour(_ t: Double) -> String {
+    Date(timeIntervalSince1970: t).formatted(date: .omitted, time: .shortened)
+  }
+}
+
+/// Kayitlardaki bir fotograf: buyuk gosterim + bilgiler
+struct MediaItem: Identifiable {
+  let path: String
+  let title: String
+  var lines: [String?] = []
+  var time: Double = 0
+  var kind: String = ""
+  var id: String { path + title }
+}
+
+struct PhotoTile: View {
+  var url: URL?
+  var caption: String
+  var size: CGFloat
+
+  var body: some View {
+    VStack(spacing: 4) {
+      AsyncImage(url: url) { $0.resizable().scaledToFill() } placeholder: { Theme.raised }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+      Text(caption).font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
+    }
+  }
+}
+
+struct MediaDetailView: View {
+  var item: MediaItem
+  var url: URL?
+
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 10) {
+        AsyncImage(url: url) { $0.resizable().scaledToFit() } placeholder: {
+          Theme.raised.frame(height: 240)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        Text(item.title).font(.title2.weight(.bold)).foregroundStyle(Theme.text)
+        ForEach(Array(item.lines.compactMap { $0 }.filter { !$0.isEmpty }.enumerated()), id: \.offset) { _, l in
+          Text(l).font(.subheadline).foregroundStyle(Theme.muted)
+        }
+        if let url { SaveImageButton(url: url, title: item.title) }
+      }
+      .padding(16)
+    }
+    .background(Theme.ink)
+    .presentationDragIndicator(.visible)
+  }
+}
+
+/// Fotografi PC'den indirip telefona kaydet / paylas
+struct SaveImageButton: View {
+  var url: URL
+  var title: String
+  @State private var image: UIImage?
+
+  var body: some View {
+    Group {
+      if let image {
+        ShareLink(item: Image(uiImage: image),
+                  preview: SharePreview(title.isEmpty ? "Fotoğraf" : title, image: Image(uiImage: image))) {
+          Label("Telefona kaydet / paylaş", systemImage: "square.and.arrow.down")
+            .fontWeight(.semibold).frame(maxWidth: .infinity).padding(.vertical, 12)
+            .foregroundStyle(Theme.text)
+            .background(Theme.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+      } else {
+        ProgressView().frame(maxWidth: .infinity)
+      }
+    }
+    .task(id: url) {
+      if let r = try? await URLSession.shared.data(from: url) { image = UIImage(data: r.0) }
+    }
+  }
+}
+
+/// Videoyu PC'den indir, sonra Fotograflar'a kaydet / paylas
+struct SaveVideoButton: View {
+  var url: URL
+  @State private var file: URL?
+  @State private var loading = false
+
+  var body: some View {
+    if let file {
+      ShareLink(item: file) {
+        Label("Telefona kaydet / paylaş", systemImage: "square.and.arrow.down")
+          .fontWeight(.semibold).frame(maxWidth: .infinity).padding(.vertical, 12)
+          .foregroundStyle(Theme.text)
+          .background(Theme.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      }
+    } else {
+      Button {
+        loading = true
+        Task {
+          file = await download()
+          loading = false
+        }
+      } label: {
+        Label(loading ? "İndiriliyor…" : "Telefona indir", systemImage: "arrow.down.circle")
+          .fontWeight(.semibold).frame(maxWidth: .infinity).padding(.vertical, 12)
+          .foregroundStyle(Theme.text)
+          .background(Theme.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      }
+      .buttonStyle(.plain)
+      .disabled(loading)
+    }
+  }
+
+  private func download() async -> URL? {
+    guard let r = try? await URLSession.shared.download(from: url) else { return nil }
+    let dest = FileManager.default.temporaryDirectory.appendingPathComponent(url.lastPathComponent)
+    try? FileManager.default.removeItem(at: dest)
+    do { try FileManager.default.moveItem(at: r.0, to: dest) } catch { return nil }
+    return dest
   }
 }
 
@@ -743,7 +963,7 @@ struct SettingsView: View {
         } header: {
           Text("Ses")
         } footer: {
-          Text("“Yapay zekâ katmanını başlat / kapat”, “Kaydı başlat / durdur”, “Claude, …”, “sus”, “yeni konu”.")
+          Text("Komutlar: “yapay zekâ katmanını başlat / kapat”, “kaydı başlat / durdur”, “kişi saymayı başlat / bitir”, “tara”, “bu hata ne”. Claude için cümleye “Claude” ya da “Asistan” diye başla; cevaptan sonra 12 sn devam sorusu sorabilirsin. Diğer konuşmalar yok sayılır.")
         }
 
         Section {
