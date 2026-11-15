@@ -39,11 +39,11 @@ FACES_DIR = HERE / "faces"
 
 # Web ve mobilden acilip kapatilabilen modeller (anahtar -> ad, aciklama, varsayilan)
 MODEL_INFO: dict[str, tuple[str, str, bool]] = {
-    "ppe": ("Kişi ve KKD", "SH17-X · kişi sayımı, baret, maske, yelek…", True),
-    "faces": ("Yüz tanıma", "YuNet + ArcFace R100 · tekrar sayımı önler, yüz kaydı", True),
+    "ppe": ("Kişi ve KKD", "YOLO26-X + ReID kişi sayımı · SH17-X baret, maske, yelek…", True),
+    "faces": ("Yüz tanıma", "SCRFD-10G + ArcFace R100 · tekrar sayımı önler, yüz kaydı", True),
     "objects": ("Nesne kütüphanesi", "YOLOE-L · 4.585 tür veya özel liste", True),
-    "vehicles": ("Araç tanıma", "YOLO11-X · tür, renk, plaka eşleştirme, araç günlüğü", True),
-    "plates": ("Plaka okuma", "YOLOv9-S-608 + CCT · tüm plakalar + aranan plaka alarmı", True),
+    "vehicles": ("Araç tanıma", "YOLO26-X · tür, renk, plaka eşleştirme, araç günlüğü", True),
+    "plates": ("Plaka okuma", "YOLOv9-S-608 + CCT · Türk plaka düzeltmesi, tüm plakalar + aranan plaka", True),
     "qr": ("QR / Barkod", "zxing-cpp", True),
     "hairnet": ("Bone tespiti", "YOLOE metin istemi · deneysel", False),
     "claude": ("Claude asistan", "Claude Code · sesli soru-cevap", True),
@@ -130,6 +130,31 @@ class Detector:
         self.model = YOLO(str(MODELS / model))
         self.names = self.model.names
         print(f"[vision] KKD modeli: {model}")
+
+        # Kisi bulma + takip: KKD modelinden ayri, cok buyuk veriyle (COCO) egitilmis
+        # en buyuk genel model. Uzak / yarim gorunen kisileri cok daha iyi bulur.
+        pm = next((m for m in ("yolo26x.pt", "yolo11x.pt") if (MODELS / m).exists()), None)
+        self.person_model = YOLO(str(MODELS / pm)) if pm else None
+        print(f"[vision] kisi modeli: {pm or 'KKD modeli'}")
+        # Takipci: kisiyi kiyafet/vucuttan taniyan ozel ReID modeli (GPU'da)
+        self.tracker_cfg = str(HERE / "tracker.yaml")
+        reid_model = MODELS / "yolo26x-reid.onnx"
+        if reid_model.exists():
+            import reid_gpu
+
+            reid_gpu.install()
+            txt = (HERE / "tracker.yaml").read_text(encoding="utf-8")
+            txt = "\n".join(f"model: {reid_model.as_posix()}" if l.startswith("model:") else
+                            "appearance_thresh: 0.35" if l.startswith("appearance_thresh:") else l
+                            for l in txt.splitlines())
+            (HERE / "tracker_run.yaml").write_text(txt + "\n", encoding="utf-8")
+            self.tracker_cfg = str(HERE / "tracker_run.yaml")
+        self.counting = False  # sayim oturumu suruyor mu (uzaktakiler icin buyuk cozunurluk)
+        if self.person_model is not None:  # isinma: ReID cevirisi ilk karede beklemesin
+            blank = np.zeros((720, 1280, 3), np.uint8)
+            for sz in (640, args.count_imgsz):
+                self.person_model.track(blank, persist=True, classes=[0], tracker=self.tracker_cfg,
+                                        device=self.device, verbose=False, half=self.device == 0, imgsz=sz)
 
         self.required: list[str] = self._load_ppe()
         self.enabled: dict[str, bool] = self._load_models()
@@ -250,6 +275,10 @@ class Detector:
         self.obj_seen: dict[str, int] = {}
         self.frame_i = 0
         self.faces.reset()
+        for m in (self.model, getattr(self, "person_model", None)):  # takip numaralari sifirdan
+            pr = getattr(m, "predictor", None) if m is not None else None
+            for tr in getattr(pr, "trackers", None) or []:
+                tr.reset()
 
     def _key(self, tid: int, t: Track) -> str:
         return f"i{t.ident}" if t.ident else f"t{tid}"
@@ -266,11 +295,24 @@ class Detector:
         persons: list[tuple[int, tuple]] = []
         parts: dict[str, list[tuple]] = {}
         res = None
-        if self.enabled["ppe"]:
-            res = self.model.track(
-                frame, persist=True, conf=self.args.conf, tracker=str(HERE / "tracker.yaml"),
-                device=self.device, verbose=False, half=self.device == 0,
+        half = self.device == 0
+        if self.person_model is not None and (self.enabled["ppe"] or self.enabled["faces"]):
+            # Sayim sirasinda buyuk cozunurluk: uzaktaki kucuk kisiler de bulunur
+            pres = self.person_model.track(
+                frame, persist=True, classes=[0], conf=self.args.conf, tracker=self.tracker_cfg,
+                device=self.device, verbose=False, half=half, imgsz=self.args.count_imgsz if self.counting else 640,
             )[0]
+            if pres.boxes is not None and pres.boxes.id is not None:
+                for b, tid in zip(pres.boxes.xyxy.cpu().numpy(), pres.boxes.id.int().cpu().tolist()):
+                    persons.append((tid, tuple(float(v) for v in b)))
+        if self.enabled["ppe"]:
+            if self.person_model is None:
+                res = self.model.track(
+                    frame, persist=True, conf=self.args.conf, tracker=self.tracker_cfg,
+                    device=self.device, verbose=False, half=half,
+                )[0]
+            else:  # KKD modeli yalnizca parcalari (maske, kask, kafa ...) bulur
+                res = self.model.predict(frame, conf=self.args.conf, device=self.device, verbose=False, half=half)[0]
         if res is not None and res.boxes is not None and len(res.boxes):
             xyxy = res.boxes.xyxy.cpu().numpy()
             cls = res.boxes.cls.int().cpu().tolist()
@@ -278,7 +320,7 @@ class Detector:
             for b, c, tid in zip(xyxy, cls, ids):
                 name, b = self.names[c], tuple(float(v) for v in b)
                 if name == "person":
-                    if tid is not None:
+                    if tid is not None and self.person_model is None:
                         persons.append((tid, b))
                 else:
                     parts.setdefault(name, []).append(b)
@@ -299,9 +341,13 @@ class Detector:
             t = self.tracks.get(tid)
             if t is None:
                 t = self.tracks[tid] = Track(first_seen=now)
-            if heads[tid] is not None and (t.ident is None or self.frame_i - t.last_face_try > 12):
-                face_jobs.append((tid, _expand(heads[tid], 0.35, W, H)))
-                t.last_face_try = self.frame_i
+            if t.ident is None or self.frame_i - t.last_face_try > 12:
+                if heads[tid] is not None:
+                    face_jobs.append((tid, _expand(heads[tid], 0.35, W, H)))
+                    t.last_face_try = self.frame_i
+                elif self.frame_i - t.last_face_try > 4:  # kafa bulunamadi: kisinin ust kisminda yuz ara
+                    face_jobs.append((tid, (pb[0], pb[1], pb[2], pb[1] + (pb[3] - pb[1]) * 0.3)))
+                    t.last_face_try = self.frame_i
         if self.enabled["faces"]:
             self.faces.submit(frame, face_jobs)
 
@@ -352,7 +398,8 @@ class Detector:
 
             # Yuz hic gorunmuyorsa (arkadan) uzun sure kafa gorulunce yine say
             counted = t.ident is not None or t.counted_by_track
-            if not counted and tall and t.head_frames >= self.args.noface_frames:
+            if not counted and tall and (t.head_frames >= self.args.noface_frames
+                                         or t.frames >= self.args.noface_frames * 2):
                 t.counted_by_track = True
                 self.total_people += 1
                 self._add_person(frame, pb, head, tid, None, now)
@@ -709,6 +756,7 @@ def run(args: argparse.Namespace) -> None:
                                             det.set_models({"hairnet": True})
                                         send(det.ppe_config())
                                     det.reset()
+                                    det.counting = True
                                     sessions.start(cmd.get("location"), cmd.get("lat"), cmd.get("lon"), turned)
                                     where = f" Konum: {cmd['location']}." if cmd.get("location") else ""
                                     extra = ""
@@ -720,6 +768,7 @@ def run(args: argparse.Namespace) -> None:
                                 send(sessions.state())
                             elif t == "count_stop":
                                 s_ = sessions.stop(det, PPE_ITEMS)
+                                det.counting = False
                                 if s_ is None:
                                     say("Süren bir sayım yok.")
                                 else:
@@ -824,6 +873,7 @@ def main() -> None:
     ap.add_argument("--model", default="ppe_sh17x.pt", help="SH17 KKD modeli (vision/models icinde)")
     ap.add_argument("--conf", type=float, default=0.35, help="tespit esigi")
     ap.add_argument("--min-height", type=float, default=0.12, help="sayilacak kisinin min. yuksekligi (kare orani)")
+    ap.add_argument("--count-imgsz", type=int, default=960, help="sayim sirasinda kisi modeli cozunurlugu")
     ap.add_argument("--noface-frames", type=int, default=25, help="yuz gorunmeden saymak icin gereken kafa karesi")
     ap.add_argument("--ppe-frames", type=int, default=8, help="KKD kararini vermek icin kontrol edilen kare")
     ap.add_argument("--ppe-ratio", type=float, default=0.3, help="KKD 'var' sayilmasi icin gorulme orani")

@@ -1,4 +1,4 @@
-"""Yuz bulma (YuNet) + yuz tanima (ArcFace R50 veya SFace).
+"""Yuz bulma (SCRFD-10G, yedek YuNet) + yuz tanima (ArcFace R100 veya SFace).
 
 Amac: kafaya takili kamerada takip numarasi (track id) sik kaybolur; ayni kisi
 tekrar gorundugunde yuzunden taninir ve YENIDEN SAYILMAZ. Her kisinin en net
@@ -35,6 +35,56 @@ ARC_TEMPLATE = np.array(
 )
 
 
+class SCRFD:
+    """InsightFace SCRFD-10G (buffalo_l det_10g.onnx) yuz bulucu.
+    YuNet'ten belirgin sekilde iyi: uzak / kucuk / yari yandan yuzleri de bulur.
+    Cikti YuNet satiri bicimindedir: [x, y, w, h, 5 nokta (10), skor]."""
+
+    STRIDES = (8, 16, 32)
+
+    def __init__(self, path: Path, thresh: float = 0.5) -> None:
+        import onnxruntime as ort
+
+        so = ort.SessionOptions()
+        so.log_severity_level = 3  # dinamik giris boyutu uyarilarini sustur
+        self.sess = ort.InferenceSession(str(path), so, providers=["CPUExecutionProvider"])
+        self.inp = self.sess.get_inputs()[0].name
+        self.thresh = thresh
+        self._grid: dict[tuple[int, int, int], np.ndarray] = {}
+
+    def _centers(self, h: int, w: int, s: int) -> np.ndarray:
+        key = (h, w, s)
+        if key not in self._grid:
+            ys, xs = np.mgrid[: h // s, : w // s]
+            c = np.stack([xs, ys], -1).reshape(-1, 2).astype(np.float32) * s
+            self._grid[key] = np.repeat(c, 2, axis=0)  # her noktada 2 anchor
+        return self._grid[key]
+
+    def detect(self, img: np.ndarray) -> np.ndarray | None:
+        h0, w0 = img.shape[:2]
+        H, W = max(64, -(-h0 // 32) * 32), max(64, -(-w0 // 32) * 32)
+        canvas = np.zeros((H, W, 3), np.uint8)
+        canvas[:h0, :w0] = img
+        blob = cv2.dnn.blobFromImage(canvas, 1.0 / 128, (W, H), (127.5, 127.5, 127.5), swapRB=True)
+        outs = self.sess.run(None, {self.inp: blob})
+        rows = []
+        for i, s in enumerate(self.STRIDES):
+            sc, bb, kp = (o[0] if o.ndim == 3 else o for o in (outs[i], outs[i + 3], outs[i + 6]))
+            keep = sc[:, 0] >= self.thresh
+            if not keep.any():
+                continue
+            c = self._centers(H, W, s)[keep]
+            d, k = bb[keep] * s, kp[keep] * s
+            x1, y1, x2, y2 = c[:, 0] - d[:, 0], c[:, 1] - d[:, 1], c[:, 0] + d[:, 2], c[:, 1] + d[:, 3]
+            pts = k.reshape(-1, 5, 2) + c[:, None, :]
+            rows.append(np.column_stack([x1, y1, x2 - x1, y2 - y1, pts.reshape(-1, 10), sc[keep, 0]]))
+        if not rows:
+            return None
+        r = np.concatenate(rows).astype(np.float32)
+        idx = cv2.dnn.NMSBoxes(r[:, :4].tolist(), r[:, 14].tolist(), self.thresh, 0.4)
+        return r[np.array(idx).flatten()] if len(idx) else None
+
+
 @dataclass
 class Identity:
     id: int
@@ -57,9 +107,15 @@ class Identity:
 
 class FaceID:
     def __init__(self, backend: str = "arcface") -> None:
-        self.det = cv2.FaceDetectorYN.create(
-            str(MODELS / "face_detection_yunet_2023mar.onnx"), "", (320, 320), 0.75, 0.3, 20
-        )
+        if (MODELS / "det_10g.onnx").exists():
+            self.scrfd = SCRFD(MODELS / "det_10g.onnx")
+            print("[faceid] yuz bulma: SCRFD-10G")
+        else:
+            self.scrfd = None
+            self.det = cv2.FaceDetectorYN.create(
+                str(MODELS / "face_detection_yunet_2023mar.onnx"), "", (320, 320), 0.75, 0.3, 20
+            )
+            print("[faceid] yuz bulma: YuNet")
         rec = next((n for n in ("arcface_r100.onnx", "arcface_r50.onnx") if (MODELS / n).exists()), None)
         self.backend = backend if rec else "sface"
         if self.backend.startswith("arcface"):
@@ -90,8 +146,11 @@ class FaceID:
         scale = max(1.0, 160.0 / min(crop.shape[:2]))  # kucuk (uzak) yuzleri buyut
         if scale > 1.0:
             crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
-        self.det.setInputSize((crop.shape[1], crop.shape[0]))
-        _, faces = self.det.detect(crop)
+        if self.scrfd is not None:
+            faces = self.scrfd.detect(crop)
+        else:
+            self.det.setInputSize((crop.shape[1], crop.shape[0]))
+            _, faces = self.det.detect(crop)
         if faces is None or len(faces) == 0:
             return None
         f = max(faces, key=lambda r: r[2] * r[3]).copy()

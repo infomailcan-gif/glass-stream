@@ -1,6 +1,7 @@
 """Plaka okuma + aranan plaka listesi.
 
-fast-alpr (acik kaynak): YOLOv9 plaka bulucu + CCT global OCR modeli.
+fast-alpr (acik kaynak): YOLOv9 plaka bulucu + CCT global OCR modeli,
+ustune Turk plaka bicimi duzeltmesi (il kodu, harf/rakam konumu) ve kareler arasi oylama.
 Gizlilik: SADECE aranan listedeki plakalar kaydedilir. Diger plakalar
 ekranda gosterilir ama hicbir yere yazilmaz.
 """
@@ -26,6 +27,50 @@ _CONFUSE = str.maketrans({"O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "Z":
 
 def normalize(text: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", text.upper().replace("İ", "I"))
+
+
+# ---------------- Turk plakasi bicim duzeltmesi ----------------
+# Bicim: il kodu (01-81) + 1-3 harf + 2-4 rakam. Ornek: 34 A 1234, 06 AB 123, 35 ABC 12
+# Turk plakalarinda Q, W, X ve Turkce harfler kullanilmaz.
+_TR_LETTERS = set("ABCDEFGHIJKLMNOPRSTUVYZ")
+_L2D = {"O": "0", "Q": "0", "D": "0", "U": "0", "I": "1", "L": "1", "J": "1", "T": "7", "Z": "2",
+        "S": "5", "B": "8", "G": "6", "A": "4", "E": "8"}
+_D2L = {"0": "O", "1": "I", "2": "Z", "5": "S", "8": "B", "6": "G", "4": "A", "7": "T", "3": "B"}
+_TR_SHAPES = {1: (4,), 2: (3, 4), 3: (2, 3)}  # harf sayisi -> izinli rakam sayilari
+
+
+def _as(ch: str, digit: bool) -> tuple[str | None, int]:
+    """Karakteri rakam/harf olmaya zorla. (yeni, maliyet) - olmuyorsa (None, 0)."""
+    if digit:
+        return (ch, 0) if ch.isdigit() else (_L2D.get(ch), 1) if ch in _L2D else (None, 0)
+    if ch in _TR_LETTERS:
+        return ch, 0
+    return (_D2L.get(ch), 1) if ch in _D2L else (None, 0)
+
+
+def turkish_fix(text: str) -> tuple[str, int] | None:
+    """Okunan metni gecerli bir Turk plakasina en az degisiklikle cevir.
+    Dondurur: (plaka, degisen karakter sayisi) ya da Turk plakasina benzemiyorsa None."""
+    if len(text) > 8 and text.startswith("TR"):  # mavi seritteki TR yazisi
+        text = text[2:]
+    best = None
+    for letters, digit_opts in _TR_SHAPES.items():
+        for nd in digit_opts:
+            if 2 + letters + nd != len(text):
+                continue
+            out, cost = [], 0
+            for i, ch in enumerate(text):
+                c, k = _as(ch, digit=not (2 <= i < 2 + letters))
+                if c is None:
+                    break
+                out.append(c)
+                cost += k
+            else:
+                plate = "".join(out)
+                prov_cost = sum(a != b for a, b in zip(plate[:2], text[:2]))
+                if prov_cost <= 1 and 1 <= int(plate[:2]) <= 81 and (best is None or cost < best[1]):
+                    best = (plate, cost)
+    return best if best and best[1] <= 2 else None
 
 
 def pretty(plate: str) -> str:
@@ -156,6 +201,10 @@ class PlateReader:
             text = normalize(r.ocr.text)
             if len(text) < 4 or conf < self.min_conf:
                 continue
+            fixed = turkish_fix(text)
+            if fixed:
+                text = fixed[0]
+            text = self._vote(text, now)
 
             self.last_reads.append((xyxy, text, conf))
             wanted = next((w for w in self.watchlist if matches(text, w)), None)
@@ -175,6 +224,17 @@ class PlateReader:
                 announcements.append(f"Aranan plaka bulundu: {spoken(wanted)}")
                 captures.append({"plate": pretty(wanted), "read": label, "file": fname, "time": now})
         return boxes, announcements, captures
+
+    def _vote(self, text: str, now: float, window: float = 4.0) -> str:
+        """Kareler arasi oylama: son birkac saniyede ayni plaka (1 karakter farkla)
+        daha cok okunduysa onu kullan. Tek karedeki okuma hatasi kayda gecmez."""
+        self.votes = [(p, t) for p, t in getattr(self, "votes", []) if now - t < window]
+        self.votes.append((text, now))
+        near: dict[str, int] = {}
+        for p, _ in self.votes:
+            if p == text or _dist(p, text) <= 1:
+                near[p] = near.get(p, 0) + 1
+        return max(near, key=lambda p: (near[p], p == text))
 
     def _save(self, frame: np.ndarray, xyxy, plate: str, now: float) -> str:
         img = frame.copy()

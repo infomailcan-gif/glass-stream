@@ -99,7 +99,7 @@ class Vehicle:
 
 class VehicleTracker:
     def __init__(self, device, conf: float = 0.4) -> None:
-        name = next(n for n in ("yolo11x.pt", "yolo11l.pt", "yolo11s.pt", "yolo11n.pt") if (MODELS / n).exists())
+        name = next(n for n in ("yolo26x.pt", "yolo11x.pt", "yolo11l.pt", "yolo11s.pt", "yolo11n.pt") if (MODELS / n).exists())
         self.model = YOLO(str(MODELS / name))
         self.device = device
         self.conf = conf
