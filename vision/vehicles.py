@@ -106,6 +106,7 @@ class VehicleTracker:
         self.vehicles: dict[int, Vehicle] = {}
         self.current: list[tuple[int, tuple]] = []  # bu karedeki (id, kutu)
         self.recent_plates: dict[str, float] = {}
+        self.plate_hits: dict[str, list[float]] = {}
         self.log_all = True  # tum plakalari gunluge yaz
         self.speak = False  # yeni araci sesli soyle
         LOG_DIR.mkdir(exist_ok=True)
@@ -151,6 +152,26 @@ class VehicleTracker:
                         best, best_area = tid, a
             if best is not None:
                 self.vehicles[best].plates[text] += 1
+
+    def plate_seen(self, text: str, xyxy, frame: np.ndarray, now: float) -> dict | None:
+        """Her plaka okumasi. 5 sn icinde 2 kez ayni okunursa ve bir araca bagli degilse
+        dogrudan gunluge yazar (araca bagliysa arac kaydi plakasiyla yazilir)."""
+        hits = [t for t in self.plate_hits.get(text, []) if now - t < 5] + [now]
+        self.plate_hits[text] = hits
+        if len(hits) < 2 or not self.log_all or now - self.recent_plates.get(text, 0) < 600:
+            return None
+        cx, cy = (xyxy[0] + xyxy[2]) / 2, (xyxy[1] + xyxy[3]) / 2
+        if any(b[0] <= cx <= b[2] and b[1] <= cy <= b[3] for _, b in self.current):
+            return None  # bir aracin icinde: arac kaydi plakasiyla yazilacak
+        self.recent_plates[text] = now
+        H, W = frame.shape[:2]
+        w, h = xyxy[2] - xyxy[0], xyxy[3] - xyxy[1]
+        x1, y1 = int(max(0, xyxy[0] - w * 1.5)), int(max(0, xyxy[1] - h * 3))
+        x2, y2 = int(min(W, xyxy[2] + w * 1.5)), int(min(H, xyxy[3] + h * 1.5))
+        v = Vehicle(first_seen=now, last_seen=now)
+        v.best_crop = frame[y1:y2, x1:x2].copy()
+        v.types["araç"] += 1
+        return self._write(v, text, now)
 
     def boxes(self) -> list[tuple[tuple, str]]:
         """Bu karedeki araclar icin (kutu, etiket): 'Beyaz araba · 34 ABC 123'"""

@@ -253,6 +253,8 @@
       <p class="hint">Sesli: “bilgi işlem modunu başlat”, “tara”, “bu hata ne”, “bilgisayarımdaki hata ne”. Mod açıkken cihaza bir saniye sabit bakınca kendiliğinden tarar.</p>
       <div id="itQr" hidden></div>
       <div id="itLive"></div>
+      <h3>Okunan QR kodlar</h3>
+      <div id="qrList"><p class="hint">Henüz QR okunmadı.</p></div>
       <h3>Geçmiş</h3>
       <div id="itList"><p class="hint">Henüz tarama yok.</p></div>
     </section>
@@ -567,7 +569,20 @@ setInterval(() => {
   const s = Math.round(Date.now() / 1000 - countSince);
   $("countInfo").textContent = `Sürüyor: ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")} · ${$("cTotal").textContent} kişi`;
 }, 1000);
-$("countBtn").onclick = () => send({ type: countActive ? "count_stop" : "count_start" });
+$("countBtn").onclick = () => send({ type: "count_toggle" });
+function onQrList(m) {
+  const box = $("qrList");
+  if (!m.items.length) { box.innerHTML = `<p class="hint">Henüz QR okunmadı.</p>`; return; }
+  box.innerHTML = "";
+  for (const q of m.items) {
+    const row = document.createElement("div"); row.className = "itrow"; row.style.cursor = "default";
+    const it = q.item;
+    row.innerHTML = `${q.image ? `<a href="${q.image}" target="_blank"><img alt="" src="${q.image}"></a>` : `<div style="width:64px;height:64px;border-radius:8px;background:var(--raised)"></div>`}
+      <div><b>${esc(it?.ad || q.text)}</b>
+      <p>${it ? esc([it.konum, it.ip && "IP " + it.ip].filter(Boolean).join(" · ")) + "<br>" : ""}${esc(q.text)} · ${new Date(q.time * 1000).toLocaleString().slice(0, 16)}</p></div>`;
+    box.append(row);
+  }
+}
 function onSessions(m) {
   const box = $("sessList");
   if (!m.items.length) { box.innerHTML = `<p class="hint">Henüz sayım oturumu yok.</p>`; return; }
@@ -675,7 +690,10 @@ function connect() {
         case "ppe": onPpeConfig(m); break;
         case "objects_cfg": onObjCfg(m); break;
         case "models": onModels(m); break;
-        case "faces_list": onFaces(m.items.slice().reverse()); break;
+        case "faces_list":
+          $("faces").innerHTML = ""; for (const k in faceEls) delete faceEls[k];
+          $("faceWrap").hidden = !m.items.length;
+          onFaces(m.items.slice().reverse()); break;
         case "it_state": onItState(m); break;
         case "it_event": onItEvent(m); break;
         case "it_list": onItList(m); break;
@@ -683,6 +701,7 @@ function connect() {
         case "vehicles": onVehicles(m); break;
         case "count_state": onCountState(m); break;
         case "sessions": onSessions(m); break;
+        case "qr_list": onQrList(m); break;
         case "ai_state": onAiState(m); break;
         case "recording": onRecording(m); break;
         case "voice": onAnnounce(`Duyulan: “${m.text}”`); break;

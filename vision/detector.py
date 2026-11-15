@@ -35,6 +35,7 @@ HERE = Path(__file__).resolve().parent
 MODELS = HERE / "models"
 PPE_FILE = HERE / "ppe.json"
 MODELS_FILE = HERE / "models.json"
+FACES_DIR = HERE / "faces"
 
 # Web ve mobilden acilip kapatilabilen modeller (anahtar -> ad, aciklama, varsayilan)
 MODEL_INFO: dict[str, tuple[str, str, bool]] = {
@@ -197,10 +198,38 @@ class Detector:
             self.objects.enabled = self.enabled["objects"]
 
     def faces_list(self) -> dict:
-        """Sayilan kisilerin yuz kayitlari (web/mobil galerisi icin)."""
-        items = [{"id": i.id, "file": i.face_file, "time": i.last_seen or i.first_seen}
-                 for i in self.faces.fid.identities if i.face_file]
+        """Sayilan HER kisi + fotografi (yuz netse yuz, degilse kirpilmis goruntu)."""
+        items = [{"id": p["n"], "file": p["img"], "time": p["time"], "face": p["face"]}
+                 for p in self.people if p.get("img")]
         return {"type": "faces_list", "items": items[::-1]}
+
+    # ---------------- sayilan kisiler + fotograflari ----------------
+    def _add_person(self, frame, pb, head, tid: int, ident: int | None, now: float) -> None:
+        """Kisi sayildigi anda fotografini kaydet (yuz sonra gelirse degistirilir)."""
+        H, W = frame.shape[:2]
+        if head is not None:
+            box = _expand(head, 0.8, W, H)  # kafa + biraz omuz
+        else:
+            box = (pb[0], pb[1], pb[2], pb[1] + (pb[3] - pb[1]) * 0.55)  # ust govde
+        x1, y1, x2, y2 = (int(v) for v in box)
+        crop = frame[max(0, y1):min(H, y2), max(0, x1):min(W, x2)]
+        n = len(self.people) + 1
+        img = None
+        if crop.size:
+            day = time.strftime("%Y%m%d", time.localtime(now))
+            (FACES_DIR / day).mkdir(parents=True, exist_ok=True)
+            img = f"{day}/kisi_p{n:03d}_{time.strftime('%H%M%S', time.localtime(now))}.jpg"
+            cv2.imwrite(str(FACES_DIR / img), crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        entry = {"n": n, "ident": ident, "track": tid, "img": img, "face": False, "time": now}
+        # Kimligin yuzu zaten kaydedildiyse onu kullan
+        if ident is not None:
+            fi = next((i for i in self.faces.fid.identities if i.id == ident and i.face_file), None)
+            if fi:
+                entry.update(img=fi.face_file, face=True)
+        self.people.append(entry)
+
+    def _person_for_track(self, tid: int) -> dict | None:
+        return next((p for p in self.people if p["track"] == tid), None)
 
     def models_config(self) -> dict:
         return {"type": "models", "items": [
@@ -211,10 +240,12 @@ class Detector:
         self.tracks: dict[int, Track] = {}
         self.counted_idents: set[int] = set()
         self.total_people = 0
+        self.people: list[dict] = []  # sayilan her kisi: numara, kimlik, fotograf
         self.ppe_status: dict[str, dict[str, bool]] = {}  # "i3"/"t17" -> {item: var_mi}
         self.missing_totals = {k: 0 for k in PPE_ITEMS}
         self.ok_totals = {k: 0 for k in PPE_ITEMS}
         self.qr_last: dict[str, float] = {}
+        self.new_codes: list[str] = []
         self.obj_last_alert: dict[str, float] = {}
         self.obj_seen: dict[str, int] = {}
         self.frame_i = 0
@@ -277,7 +308,11 @@ class Detector:
         new_faces = []
         for ev in self.faces.take_events():
             if ev["file"]:
-                new_faces.append({"id": ev["ident"], "file": ev["file"], "time": ev["time"]})
+                # Net yuz kaydedildi: o kimlikle sayilan kisinin fotografini yuzle degistir
+                for p in self.people:
+                    if p["ident"] == ev["ident"]:
+                        p.update(img=ev["file"], face=True)
+                        new_faces.append({"id": p["n"], "file": ev["file"], "time": ev["time"]})
 
         # 3) Kisi basina: sayim, KKD, kutu
         for tid, pb in persons:
@@ -297,12 +332,20 @@ class Detector:
                     if t.counted_by_track:  # arkadan sayilmisti, aslinda bilinen kisi -> geri al
                         self.total_people -= 1
                         t.counted_by_track = False
+                        dup = self._person_for_track(tid)
+                        if dup:
+                            self.people.remove(dup)
                 else:
                     self.counted_idents.add(ident)
                     if t.counted_by_track:
                         t.counted_by_track = False  # zaten sayilmisti, kimlige bagla
+                        p_ = self._person_for_track(tid)
+                        if p_:
+                            p_["ident"] = ident
                     else:
                         self.total_people += 1
+                        self._add_person(frame, pb, head, tid, ident, now)
+                        new_faces.append({"id": len(self.people)})
                 # Track uzerinde verilmis KKD kararlarini kimlige tasi (tekrar uyari olmasin)
                 if old_key in self.ppe_status:
                     self.ppe_status.setdefault(self._key(tid, t), {}).update(self.ppe_status.pop(old_key))
@@ -312,6 +355,8 @@ class Detector:
             if not counted and tall and t.head_frames >= self.args.noface_frames:
                 t.counted_by_track = True
                 self.total_people += 1
+                self._add_person(frame, pb, head, tid, None, now)
+                new_faces.append({"id": len(self.people)})
                 counted = True
 
             # KKD oylama
@@ -367,6 +412,7 @@ class Detector:
             boxes_out.append(_box(xyxy, W, H, f"{kind}: {text[:40]}", "#f2c94c"))
             if now - self.qr_last.get(text, 0) > self.args.qr_cooldown:
                 announcements.append(f"{'QR kod' if kind == 'QR' else 'Barkod'}: {text}")
+                self.new_codes.append(text)
             self.qr_last[text] = now
 
         # 5) Genis nesne kutuphanesi
@@ -388,22 +434,30 @@ class Detector:
 
         # 6) Araclar (tur + renk) ve plakalar; plaka icinde bulundugu araca baglanir
         vehicles_on = self.enabled.get("vehicles", True)
+        vehicle_log_extra: list[dict] = []
         if vehicles_on:
             self.vehicles.update(frame, now)
+        else:
+            self.vehicles.current = []
         plate_captures: list[dict] = []
         if self.plates is not None and self.enabled["plates"]:
             self.plates.submit(frame)  # en buyuk plaka modeli ayri thread'de
             pboxes, pann, plate_captures, preads = self.plates.poll()
             if vehicles_on and preads:
                 self.vehicles.attach_plates(preads)
+            for xyxy_, text_, _c in preads:  # her plaka (araca bagli olmasa da) gunluge
+                e = self.vehicles.plate_seen(text_, xyxy_, frame, now)
+                if e:
+                    vehicle_log_extra.append(e)
             for xyxy, label, wanted in pboxes:
                 boxes_out.append(_box(xyxy, W, H, label, "#ff4d4d" if wanted else "#c792ea", small=not wanted))
             announcements.extend(pann)
-        vehicle_log: list[dict] = []
+        vehicle_log: list[dict] = list(vehicle_log_extra)
         if vehicles_on:
             for xyxy, label in self.vehicles.boxes():
                 boxes_out.append(_box(xyxy, W, H, label, "#6FA8DC"))
-            vehicle_log, vsay = self.vehicles.collect(now)
+            vl, vsay = self.vehicles.collect(now)
+            vehicle_log.extend(vl)
             announcements.extend(vsay)
 
         visible = sum(1 for tid, _ in persons if self.tracks[tid].ident or self.tracks[tid].counted_by_track)
@@ -583,6 +637,8 @@ def run(args: argparse.Namespace) -> None:
                             except json.JSONDecodeError:
                                 continue
                             t = cmd.get("type")
+                            if t == "count_toggle":  # panel dugmesi: PC'deki gercek duruma gore
+                                t = "count_stop" if sessions.active else "count_start"
                             if t == "reset":
                                 det.reset()
                                 print("[vision] sayaclar sifirlandi")
@@ -641,7 +697,7 @@ def run(args: argparse.Namespace) -> None:
                                     itm.error(img, src, cmd.get("text", ""))
                             elif t == "count_start":  # kisi sayim oturumu
                                 if sessions.active:
-                                    say("Sayım zaten sürüyor.")
+                                    say("Sayım zaten sürüyor. Bitirmek için kişi saymayı bitir de.")
                                 else:
                                     turned = not state["ai"]
                                     state["ai"] = True
@@ -679,7 +735,7 @@ def run(args: argparse.Namespace) -> None:
                             elif t == "qr":  # telefonda okunan QR (anlik)
                                 txt = str(cmd.get("text", ""))[:300]
                                 det.qr_last[txt] = time.time()  # PC ayni QR'i tekrar anons etmesin
-                                itm.on_qr(txt)
+                                itm.on_qr(txt, frame_jpeg(state["frame"]) if state["frame"] is not None else None)
                             elif t == "vehicles_set":  # {"log_all": bool, "speak": bool}
                                 if "log_all" in cmd:
                                     det.vehicles.log_all = bool(cmd["log_all"])
@@ -695,6 +751,7 @@ def run(args: argparse.Namespace) -> None:
                                 send(det.faces_list())
                                 send(itm.state())
                                 send(itm.history())
+                                send(itm.qr_history())
                                 send(det.vehicles.history())
                     finally:
                         stop.set()
@@ -741,6 +798,9 @@ def run(args: argparse.Namespace) -> None:
                         elif not pending["capture"] and still.update(frame):
                             pending["capture"] = time.time()
                             send({"type": "it_capture_request"})
+                    for code in det.new_codes:  # PC'nin okudugu QR'lar da gecmise
+                        itm.log_qr(code, frame_jpeg(frame), "bilgisayar")
+                    det.new_codes = []
                     send(result)
                     if result.get("faces"):
                         send(det.faces_list())
@@ -769,7 +829,7 @@ def main() -> None:
     ap.add_argument("--ppe-ratio", type=float, default=0.3, help="KKD 'var' sayilmasi icin gorulme orani")
     ap.add_argument("--face-backend", default="arcface", choices=["arcface", "sface"])
     ap.add_argument("--no-faces", dest="save_faces", action="store_false", help="yuz fotografi kaydini kapat")
-    ap.add_argument("--face-min-px", type=int, default=28, help="kaydedilecek yuzun min. boyutu (piksel)")
+    ap.add_argument("--face-min-px", type=int, default=20, help="kaydedilecek yuzun min. boyutu (piksel)")
     ap.add_argument("--qr-cooldown", type=float, default=15.0)
     ap.add_argument("--no-objects", dest="objects", action="store_false")
     ap.add_argument("--obj-cooldown", type=float, default=30.0)

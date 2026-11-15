@@ -46,7 +46,7 @@ class CountSessions:
         s = self.current
         self.current = None
         now = time.time()
-        faces = [{"id": i.id, "file": i.face_file} for i in det.faces.fid.identities if i.face_file]
+        faces = [{"id": p["n"], "file": p["img"], "face": p["face"]} for p in det.people if p.get("img")]
         ppe = [{"key": k, "name": ppe_items[k][0], "with": WITH.get(k, ppe_items[k][0].lower() + "li"),
                 "without": ppe_items[k][1], "ok": det.ok_totals.get(k, 0), "missing": det.missing_totals.get(k, 0)}
                for k in det.required if k in ppe_items]

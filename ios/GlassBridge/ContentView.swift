@@ -19,8 +19,8 @@ struct ContentView: View {
           .tabItem { Label("BT", systemImage: "server.rack") }
         RecordingsView(model: model).tag(3)
           .tabItem { Label("Kayıtlar", systemImage: "film.stack") }
-        SettingsView(model: model).tag(4)
-          .tabItem { Label("Ayarlar", systemImage: "gearshape") }
+        NavigationStack { ModelsView(model: model) }.tag(4)
+          .tabItem { Label("Modeller", systemImage: "cpu") }
       }
       .tint(Theme.amber)
       .onChange(of: tab) { _, t in model.liveActive = (t == 1) }
@@ -73,6 +73,7 @@ struct Page<Content: View>: View {
 
 struct PanelView: View {
   @Bindable var model: BridgeModel
+  @State private var showSettings = false
 
   var body: some View {
     Page(title: "Panel") {
@@ -126,7 +127,7 @@ struct PanelView: View {
                      ? "Sürüyor · \(model.totalPeople) kişi" + (model.countLocation.map { " · " + $0 } ?? "")
                      : "Alanı say, bitince kaydedilir",
                    isOn: model.countActive, tint: Theme.amber) {
-          model.countActive ? model.stopCount() : model.startCount()
+          model.toggleCount()
         }
         Divider().overlay(Theme.line)
         ControlRow(icon: "record.circle", title: "Video kaydı",
@@ -159,6 +160,19 @@ struct PanelView: View {
         Text("Duyulan: “\(heard)”").font(.footnote).foregroundStyle(Theme.muted)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
+    }
+    .overlay(alignment: .topTrailing) {
+      Button { showSettings = true } label: {
+        Image(systemName: "gearshape.fill")
+          .font(.title3)
+          .foregroundStyle(Theme.muted)
+          .padding(12)
+      }
+      .accessibilityLabel("Ayarlar")
+    }
+    .sheet(isPresented: $showSettings) {
+      SettingsView(model: model)
+        .presentationDragIndicator(.visible)
     }
   }
 }
@@ -484,6 +498,27 @@ struct RecordingsView: View {
         .disabled(!model.socketConnected)
         Text("Kayıt bilgisayara yapılır. Kutulu kayıtta tarih, saat ve kişi sayısı da yazılır.")
           .font(.footnote).foregroundStyle(Theme.muted)
+      }
+
+      if model.countActive {
+        Card(title: "Süren sayım") {
+          HStack(alignment: .firstTextBaseline) {
+            Text("\(model.totalPeople)").font(.system(size: 40, weight: .heavy)).foregroundStyle(Theme.amber)
+            Text("kişi").foregroundStyle(Theme.muted)
+            Spacer()
+            if let since = model.countSince {
+              Text(Date(timeIntervalSince1970: since), style: .timer).font(.headline).foregroundStyle(Theme.text)
+            }
+          }
+          if let loc = model.countLocation { Text(loc).font(.footnote).foregroundStyle(Theme.muted) }
+          Button { model.toggleCount() } label: {
+            Label("Sayımı bitir ve kaydet", systemImage: "stop.circle.fill")
+              .fontWeight(.semibold).frame(maxWidth: .infinity).padding(.vertical, 10)
+              .foregroundStyle(Theme.bad)
+              .background(Theme.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+          }
+          .buttonStyle(.plain)
+        }
       }
 
       Card(title: "Sayım oturumları") {

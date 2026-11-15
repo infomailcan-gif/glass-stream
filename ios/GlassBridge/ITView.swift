@@ -48,6 +48,30 @@ struct ITView: View {
         ITCard(record: r, imageURL: model.httpURL(r.image))
       }
 
+      Card(title: "Okunan QR kodlar") {
+        if model.qrHistory.isEmpty {
+          Text("Okunan QR kodlar saat ve fotoğrafıyla burada listelenir.")
+            .font(.subheadline).foregroundStyle(Theme.muted)
+        }
+        ForEach(model.qrHistory.prefix(30)) { q in
+          HStack(spacing: 12) {
+            AsyncImage(url: q.image.flatMap { model.httpURL($0) }) { $0.resizable().scaledToFill() } placeholder: { Theme.raised }
+              .frame(width: 52, height: 52)
+              .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+              Text(q.name ?? q.text).fontWeight(.semibold).foregroundStyle(Theme.text).lineLimit(2)
+              if q.name != nil {
+                Text([q.place, q.ip.map { "IP " + $0 }].compactMap { $0 }.joined(separator: " · "))
+                  .font(.footnote).foregroundStyle(Theme.muted)
+              }
+              Text(Date(timeIntervalSince1970: q.time).formatted(date: .abbreviated, time: .shortened))
+                .font(.caption).foregroundStyle(Theme.muted)
+            }
+            Spacer()
+          }
+        }
+      }
+
       Card(title: "Geçmiş") {
         if model.itHistory.isEmpty {
           Text("Henüz tarama yok.").font(.subheadline).foregroundStyle(Theme.muted)

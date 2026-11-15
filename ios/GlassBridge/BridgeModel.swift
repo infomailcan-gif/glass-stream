@@ -666,6 +666,15 @@ final class BridgeModel {
       if let items = obj["items"] as? [[String: Any]] {
         countSessions = items.map { CountSession($0) }
       }
+    case "qr_list":
+      if let items = obj["items"] as? [[String: Any]] {
+        qrHistory = items.map { q in
+          let item = q["item"] as? [String: Any]
+          return QREntry(time: q["time"] as? Double ?? 0, text: q["text"] as? String ?? "",
+                         name: item?["ad"] as? String, place: item?["konum"] as? String,
+                         ip: item?["ip"] as? String, image: q["image"] as? String)
+        }
+      }
     case "faces_list":
       if let items = obj["items"] as? [[String: Any]] {
         faces = items.compactMap { f in
@@ -873,6 +882,30 @@ final class BridgeModel {
   func stopCount() {
     uploader.sendJSON(["type": "count_stop"])
   }
+
+  /// Panel dugmesi: PC hangi durumdaysa tersine cevirir (telefonun bildigi durum yanilsa da)
+  func toggleCount() {
+    if countActive {
+      countActive = false
+      uploader.sendJSON(["type": "count_toggle"])
+    } else {
+      startCount()
+    }
+  }
+
+  // MARK: - QR gecmisi
+
+  struct QREntry: Identifiable {
+    let time: Double
+    let text: String
+    let name: String?
+    let place: String?
+    let ip: String?
+    let image: String?
+    var id: String { "\(time)-\(text)" }
+  }
+
+  var qrHistory: [QREntry] = []
 
   // MARK: - Arac gunlugu
 

@@ -20,7 +20,8 @@ const REC_DIR = path.join(__dirname, "vision", "recordings");
 // URL oneki -> klasor
 const IT_DIR = path.join(__dirname, "vision", "it");
 const VEH_DIR = path.join(__dirname, "vision", "vehicles");
-const DIRS = { "/captures/": CAPTURES_DIR, "/faces/": FACES_DIR, "/recordings/": REC_DIR, "/it/": IT_DIR, "/vehicles/": VEH_DIR };
+const QR_DIR = path.join(__dirname, "vision", "qr");
+const DIRS = { "/captures/": CAPTURES_DIR, "/faces/": FACES_DIR, "/recordings/": REC_DIR, "/it/": IT_DIR, "/vehicles/": VEH_DIR, "/qr/": QR_DIR };
 
 const MIME = {
   ".jpg": "image/jpeg",
@@ -153,7 +154,7 @@ visionWss.on("connection", (ws) => {
     if (["announce", "ai_state", "recording", "assistant", "models", "detections",
          "ppe", "objects_cfg", "watchlist", "faces_list",
          "it_state", "it_event", "it_list", "it_capture_request", "it_qr", "vehicles",
-         "count_state", "sessions"].includes(msg.type)) {
+         "count_state", "sessions", "qr_list"].includes(msg.type)) {
       if (msg.type === "announce") console.log(`[anons] ${msg.text}`);
       for (const phone of ingestWss.clients) if (phone.readyState === 1) phone.send(text);
     }

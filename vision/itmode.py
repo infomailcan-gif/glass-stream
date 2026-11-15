@@ -28,6 +28,7 @@ from claude_runner import ClaudeRunner
 HERE = Path(__file__).resolve().parent
 IT_DIR = HERE / "it"
 INVENTORY = HERE / "inventory.json"
+QR_DIR = HERE / "qr"
 
 HW_PROMPT = """Sen sahadaki bir bilgi işlem / ağ uzmanının akıllı gözlük asistanısın. Türkçe yaz.
 Görüntüdeki donanımı analiz et (switch, router, firewall, load balancer, sunucu, storage, patch panel, UPS, kabinet).
@@ -126,6 +127,8 @@ class ITMode:
         self.ecg_full = ClaudeRunner("ecg_full", "claude-fable-5-2", ECG_FULL_PROMPT, max_turns=4)
         self.ecg_full_backup = ClaudeRunner("ecg_full_opus", "opus", ECG_FULL_PROMPT, max_turns=4)
         self.last_qr: tuple[str, float] | None = None
+        self._qr_logged: dict[str, float] = {}
+        QR_DIR.mkdir(exist_ok=True)
         self.busy = {"hw": False, "error": False, "ecg": False}
         IT_DIR.mkdir(exist_ok=True)
         if not INVENTORY.exists():
@@ -152,14 +155,48 @@ class ITMode:
         except (OSError, ValueError):
             return {}
 
-    def on_qr(self, text: str) -> None:
-        """Telefonda okunan QR: envanterde varsa kartini yolla ve soyle."""
+    def on_qr(self, text: str, img: bytes | None = None) -> None:
+        """Telefonda okunan QR: envanterde varsa kartini yolla ve soyle; gecmise yaz."""
         self.last_qr = (text, time.time())
         item = self.inventory().get(text.strip())
         self.send({"type": "it_qr", "text": text, "item": item})
         if item:
             parts = [item.get("ad"), item.get("konum"), item.get("ip") and f"IP {item['ip']}"]
             self.say(", ".join(p for p in parts if p))
+        self.log_qr(text, img, "telefon")
+
+    def log_qr(self, text: str, img: bytes | None, source: str) -> None:
+        """Okunan QR'i saat + goruntuyle kaydet (ayni kod 30 sn icinde tekrar yazilmaz)."""
+        now = time.time()
+        if now - self._qr_logged.get(text, 0) < 30:
+            return
+        self._qr_logged[text] = now
+        day, hms = _stamp(now)
+        folder = QR_DIR / day
+        folder.mkdir(parents=True, exist_ok=True)
+        image = None
+        if img:
+            name = f"{hms}_{abs(hash(text)) % 100000}.jpg"
+            (folder / name).write_bytes(img)
+            image = f"/qr/{day}/{name}"
+        e = {"time": now, "text": text, "item": self.inventory().get(text.strip()), "image": image, "source": source}
+        with open(folder / "log.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(e, ensure_ascii=False) + "\n")
+        self.send(self.qr_history())
+
+    def qr_history(self, limit: int = 60) -> dict:
+        items = []
+        for day in sorted(QR_DIR.glob("*"), reverse=True):
+            log = day / "log.jsonl"
+            if log.exists():
+                for line in reversed(log.read_text(encoding="utf-8").splitlines()):
+                    try:
+                        items.append(json.loads(line))
+                    except ValueError:
+                        continue
+                    if len(items) >= limit:
+                        return {"type": "qr_list", "items": items}
+        return {"type": "qr_list", "items": items}
 
     # ---------------- tarama / hata ----------------
     def scan(self, img: bytes | None, source: str) -> None:

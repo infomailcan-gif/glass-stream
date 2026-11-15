@@ -151,9 +151,17 @@ final class VoiceCommands: NSObject {
       let countWord = tk.contains(where: { $0.hasPrefix("saym") || $0.hasPrefix("sayim") || $0 == "say" })
       let person = tk.contains(where: { $0.hasPrefix("kisi") || $0.hasPrefix("insan") })
       if countWord && (person || t.contains("sayim")) {
-        let stop = ["bitir", "kapat", "durdur", "sonlandir"].contains { t.contains($0) }
+        let stop = ["bitir", "bitti", "kapa", "durdur", "sonlandir", "dur "].contains { (t + " ").contains($0) }
+        let start = ["baslat", "basla", "ac ", "calistir"].contains { (t + " ").contains($0) }
+          || tk.last == "say" || tk.contains("de") && tk.contains("say")
         if stop {
+          askBuffer = nil
+          silenceTimer?.invalidate()
           fire(.countStop, raw)
+        } else if !start && !isFinal {
+          return  // cumle henuz bitmedi: "bitir" de gelebilir, bekle
+        } else if !start {
+          return  // ne baslat ne bitir: komut degil
         } else {
           // Cumlede gecen ekipmanlar bu sayimda takip edilir (maskeli, baretli...)
           let map: [(String, String)] = [("mask", "face-mask"), ("baret", "helmet"), ("yelek", "safety-vest"),
