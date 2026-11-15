@@ -18,6 +18,17 @@ struct ContentView: View {
         }
 
         Section {
+          Button(model.needsGlassesAppUpdate ? "⚠️ Gözlük uygulamasını güncelle (gerekli)" : "Gözlük uygulamasını güncelle") {
+            model.openGlassesAppUpdate()
+          }
+          Button("Gözlük yazılımını (firmware) güncelle") { model.openFirmwareUpdate() }
+        } header: {
+          Text("Güncellemeler")
+        } footer: {
+          Text("Meta AI'de ilgili güncelleme sayfası açılır. Gözlük şarjda ve yakında olsun.")
+        }
+
+        Section {
           TextField("ws://192.168.1.20:8000/ingest", text: $model.serverURL)
             .keyboardType(.URL)
             .textInputAutocapitalization(.never)

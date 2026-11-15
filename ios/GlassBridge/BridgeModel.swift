@@ -41,6 +41,7 @@ final class BridgeModel {
   var preview: UIImage?
   var errorMessage: String?
   var isRunning = false
+  var needsGlassesAppUpdate = false
 
   var serverURL: String {
     didSet { UserDefaults.standard.set(serverURL, forKey: "serverURL") }
@@ -125,6 +126,31 @@ final class BridgeModel {
     }
   }
 
+  // MARK: - Guncellemeler (Meta AI ilgili sayfayi acar)
+
+  /// Gozlukteki DAT uygulamasini guncelle ("App connections" sayfasi)
+  func openGlassesAppUpdate() {
+    Task {
+      do {
+        try await wearables.openDATGlassesAppUpdate()
+        needsGlassesAppUpdate = false
+      } catch {
+        report(error.localizedDescription)
+      }
+    }
+  }
+
+  /// Gozluk firmware guncellemesi
+  func openFirmwareUpdate() {
+    Task {
+      do {
+        try await wearables.openFirmwareUpdate()
+      } catch {
+        report(error.localizedDescription)
+      }
+    }
+  }
+
   // MARK: - Yayin
 
   func start() {
@@ -146,7 +172,12 @@ final class BridgeModel {
         Task { @MainActor in self?.handleSessionState(state) }
       }.store(in: sessionTokens)
       session.errorPublisher.listen { [weak self] error in
-        Task { @MainActor in self?.report(error.localizedDescription) }
+        let needsUpdate: Bool
+        if case .datAppOnTheGlassesUpdateRequired = error { needsUpdate = true } else { needsUpdate = false }
+        Task { @MainActor in
+          if needsUpdate { self?.needsGlassesAppUpdate = true }
+          self?.report(error.localizedDescription)
+        }
       }.store(in: sessionTokens)
       sessionState = .starting
       try session.start()
