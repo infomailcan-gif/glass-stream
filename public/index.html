@@ -128,16 +128,20 @@ function drawOverlay() {
   ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
   ctx.clearRect(0, 0, w, h);
   if (!lastDet || Date.now() - lastDetAt > 1500) return; // eski sonuclari cizme
-  ctx.font = "600 12px system-ui";
   for (const b of lastDet.boxes) {
     const x = b.x1 * w, y = b.y1 * h, bw = (b.x2 - b.x1) * w, bh = (b.y2 - b.y1) * h;
-    ctx.strokeStyle = b.color; ctx.lineWidth = b.thin ? 1.5 : 3;
+    const small = b.small || b.thin;
+    ctx.strokeStyle = b.color; ctx.lineWidth = small ? 1.2 : 2.5;
     ctx.strokeRect(x, y, bw, bh);
-    if (!b.thin) {
-      const tw = ctx.measureText(b.label).width + 8;
-      ctx.fillStyle = b.color; ctx.fillRect(x, Math.max(0, y - 18), tw, 18);
-      ctx.fillStyle = "#000"; ctx.fillText(b.label, x + 4, Math.max(13, y - 5));
-    }
+    // Etiket: kucuk kutularda kucuk yazi
+    const fs = small ? 10 : 12, lh = fs + 4;
+    ctx.font = `600 ${fs}px system-ui`;
+    const tw = ctx.measureText(b.label).width + 6;
+    const ly = y - lh >= 0 ? y - lh : y; // kutunun ustune sigmazsa icine
+    ctx.globalAlpha = small ? 0.75 : 1;
+    ctx.fillStyle = b.color; ctx.fillRect(x, ly, tw, lh);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#000"; ctx.fillText(b.label, x + 3, ly + fs);
   }
 }
 
@@ -246,7 +250,7 @@ function onFaces(list) {
       faces.prepend(el);
     }
     el.href = src; el.querySelector("img").src = src;
-    el.querySelector("div").textContent = `#${f.id} · ${new Date(f.time * 1000).toLocaleTimeString()}`;
+    el.querySelector("div").textContent = `Kişi ${f.id} · ${new Date(f.time * 1000).toLocaleTimeString()}`;
   }
 }
 

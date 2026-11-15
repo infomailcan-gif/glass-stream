@@ -82,6 +82,77 @@ def to_prompt(name: str) -> str:
     return TR_EN.get(key, name.strip())
 
 
+# Kataloglarda bircok "sahne" sinifi var (oda, tavan, magaza...). Bunlar butun kareyi
+# kaplayan anlamsiz kutular cizer; elenir.
+SCENE_WORDS = (
+    "interior", "room", "ceiling", "floor", "wall", "indoor", "outdoor", "store", "shop", "gym", "office",
+    "kitchen", "hall", "building", "street", "sky", "scene", "space", "area", "house", "home", "studio",
+    "mezzanine", "warehouse", "factory", "plant", "restaurant", "corridor", "lobby", "classroom",
+)
+MAX_AREA = 0.30  # karenin %30'undan buyuk kutulari gosterme
+
+
+def is_scene(name: str) -> bool:
+    n = name.lower()
+    return any(w in n for w in SCENE_WORDS)
+
+
+class PromptFinder:
+    """Sabit metin istemleriyle (or. bone) arka planda calisan kucuk YOLOE dedektoru."""
+
+    def __init__(self, device, prompts: dict[str, list[str]], rate_hz: float = 5.0, conf: float = 0.25) -> None:
+        self.device = device
+        self.prompts = prompts  # anahtar -> [ifade, ...]
+        self.period = 1.0 / rate_hz
+        self.conf = conf
+        self._lock = threading.Lock()
+        self._frame = None
+        self._event = threading.Event()
+        self._results: dict[str, list] = {}
+        self._at = 0.0
+        self._model = None
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def submit(self, frame) -> None:
+        with self._lock:
+            self._frame = frame
+        self._event.set()
+
+    def latest(self, max_age: float = 1.0) -> dict[str, list]:
+        with self._lock:
+            return dict(self._results) if time.time() - self._at < max_age else {}
+
+    def _loop(self) -> None:
+        from ultralytics import YOLOE
+
+        while True:
+            if not self._event.wait(1.0):
+                continue
+            with self._lock:
+                frame, self._frame = self._frame, None
+                self._event.clear()
+            if frame is None:
+                continue
+            t = time.time()
+            try:
+                if self._model is None:
+                    self._model = YOLOE(str(MODELS / "yoloe-11s-seg.pt"))
+                    phrases = [p for ps in self.prompts.values() for p in ps]
+                    self._keys = [k for k, ps in self.prompts.items() for _ in ps]
+                    self._model.set_classes(phrases, self._model.get_text_pe(phrases))
+                r = self._model.predict(frame, device=self.device, conf=self.conf, verbose=False,
+                                        half=self.device == 0)[0]
+                out: dict[str, list] = {}
+                for b, c in zip(r.boxes.xyxy.cpu().numpy(), r.boxes.cls.int().cpu().tolist()):
+                    out.setdefault(self._keys[c], []).append(tuple(float(v) for v in b))
+                with self._lock:
+                    self._results, self._at = out, time.time()
+            except Exception as e:
+                print(f"[prompt] hata: {e!r}")
+                time.sleep(1)
+            time.sleep(max(0.0, self.period - (time.time() - t)))
+
+
 class ObjectFinder:
     def __init__(self, device) -> None:
         self.device = device
@@ -154,7 +225,11 @@ class ObjectFinder:
             self._dirty = False
         if mode == "catalog":
             if self._model_mode != "catalog":
-                self._model = YOLOE(str(MODELS / "yoloe-11s-seg-pf.pt"))
+                # En buyuk (en isabetli) katalog modeli; yoksa kucuge dus
+                for name in ("yoloe-11l-seg-pf.pt", "yoloe-11m-seg-pf.pt", "yoloe-11s-seg-pf.pt"):
+                    if (MODELS / name).exists():
+                        break
+                self._model = YOLOE(str(MODELS / name))
                 self._model_mode = "catalog"
             self._display = None
             print(f"[objects] genis katalog modu: {len(self._model.names)} sinif")
@@ -186,12 +261,16 @@ class ObjectFinder:
                 r = self._model.predict(frame, device=self.device, conf=self.conf, verbose=False,
                                         half=self.device == 0)[0]
                 out = []
+                H, W = frame.shape[:2]
                 if r.boxes is not None:
                     for b, c, s in zip(r.boxes.xyxy.cpu().numpy(), r.boxes.cls.int().cpu().tolist(),
                                        r.boxes.conf.cpu().tolist()):
                         name = self._display[c] if self._display else r.names[c]
-                        if name == "person":
-                            continue  # kisileri KKD modeli zaten isliyor
+                        if name == "person" or (not self._display and is_scene(name)):
+                            continue  # kisileri KKD modeli isliyor; sahne siniflari anlamsiz
+                        area = (b[2] - b[0]) * (b[3] - b[1]) / (W * H)
+                        if area > MAX_AREA:
+                            continue  # butun kareyi kaplayan dev kutular
                         out.append((tuple(float(v) for v in b), name, s))
                 with self._lock:
                     self._results, self._at = out, time.time()

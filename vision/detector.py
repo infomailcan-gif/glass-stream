@@ -1,19 +1,17 @@
 """Glass Stream goruntu isleme servisi (ISG / fabrika).
 
 Sunucudan (ws://localhost:8000/vision) canli JPEG kareleri alir ve:
-  * SH17 KKD modeli (17 sinif: kisi, kafa, yuz, el, baret, yelek, eldiven,
-    gozluk, maske, kulaklik...) + ByteTrack ile kisileri takip eder
-  * Bir kisiyi ANCAK icinde kafa/yuz goruldugunde sayar (el/kol sayilmaz)
-  * Zorunlu KKD'leri (web'den secilir) kisi basina oylamayla kontrol eder,
-    eksikse sesli uyari uretir
-  * Sayilan her kisinin en net yuz karesini kaydeder
-  * QR / barkod okur (ayri thread)
-  * Plaka okur, aranan plakalari yakalar
-Sonuclar sunucuya JSON olarak gider:
-  {"type": "detections", ...}  -> web sayfasi (kutular, sayaclar)
-  {"type": "announce", "text"} -> gozlukten sesli okunur
+  * SH17-M KKD modeli (kisi, kafa, yuz, el, baret, yelek, eldiven, gozluk,
+    maske, kulaklik...) + BoT-SORT takip
+  * Kisiyi ANCAK kafa/yuz gorulurse sayar (el/kol sayilmaz)
+  * Yuz tanima (YuNet + ArcFace): ayni kisi tekrar gorulunce YENIDEN SAYILMAZ;
+    her kisinin en net yuz karesi kaydedilir
+  * Zorunlu KKD'leri (web'den secilir, bone dahil) kisi basina oylamayla
+    kontrol eder; eksikse bir kez sesli uyari
+  * Genis nesne kutuphanesi (YOLOE), QR/barkod, plaka okuma
+Kutular yalnizca ilgili bolgeyi (kafa/yuz) cevreler.
 
-Calistirma:  python vision/detector.py   (ayrinti: --help)
+Calistirma: start-vision.cmd  (veya vision/models icinden: python ../detector.py)
 """
 
 from __future__ import annotations
@@ -34,23 +32,23 @@ from websockets.sync.client import connect
 
 HERE = Path(__file__).resolve().parent
 MODELS = HERE / "models"
-FACES = HERE / "faces"
 PPE_FILE = HERE / "ppe.json"
 
-# SH17 sinif adi -> (Turkce ad, "eksik" hali, kafada mi aranir)
+# KKD anahtari -> (Turkce ad, "eksik" hali, kafada mi aranir)
 PPE_ITEMS: dict[str, tuple[str, str, bool]] = {
     "helmet": ("Baret", "baretsiz", True),
+    "hairnet": ("Bone", "bonesiz", True),  # deneysel: YOLOE metin istemiyle
+    "face-mask": ("Maske", "maskesiz", True),
+    "glasses": ("Gözlük", "gözlüksüz", True),
+    "ear-mufs": ("Kulaklık", "kulaklıksız", True),
     "safety-vest": ("Yelek", "yeleksiz", False),
     "gloves": ("Eldiven", "eldivensiz", False),
-    "glasses": ("Gözlük", "gözlüksüz", True),
-    "face-mask": ("Maske", "maskesiz", True),
-    "ear-mufs": ("Kulaklık", "kulaklıksız", True),
 }
+HAIRNET_PROMPTS = {"hairnet": ["hairnet", "hair net cap", "disposable bouffant cap"]}
 HEAD_CLASSES = ("head", "face")
 COLORS = {"ok": "#3ccf7a", "bad": "#e5534b", "pending": "#8ab4ff"}
 
 
-# --------------------------------------------------------------------------
 class LatestFrame:
     """Yalnizca EN SON kareyi tutar (gecikme birikmesin)."""
 
@@ -74,17 +72,15 @@ class LatestFrame:
 
 
 @dataclass
-class Person:
+class Track:
     first_seen: float
     frames: int = 0
-    head_frames: int = 0  # icinde kafa/yuz goruldugu kare sayisi
-    counted: bool = False
-    ppe_yes: dict = field(default_factory=dict)  # item -> kac karede goruldu
-    ppe_checks: dict = field(default_factory=dict)  # item -> kac karede kontrol edildi
-    ppe_status: dict = field(default_factory=dict)  # item -> True (var) / False (eksik)
-    face_quality: float = 0.0
-    face_saves: int = 0
-    face_file: str | None = None
+    head_frames: int = 0
+    ident: int | None = None  # yuz tanima kimligi
+    counted_by_track: bool = False  # yuz gorulmeden (arkadan) sayildi
+    last_face_try: int = -99
+    ppe_yes: dict = field(default_factory=dict)
+    ppe_checks: dict = field(default_factory=dict)
 
 
 def _inside(pt, box) -> bool:
@@ -95,9 +91,18 @@ def _center(b):
     return ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
 
 
-def _head_region(p):
+def _area(b) -> float:
+    return max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+
+
+def _head_zone(p):
     """Kisi kutusunun ust %40'i (kafa bolgesi)."""
     return (p[0], p[1], p[2], p[1] + (p[3] - p[1]) * 0.4)
+
+
+def _expand(b, k: float, W: int, H: int):
+    w, h = b[2] - b[0], b[3] - b[1]
+    return (max(0, b[0] - w * k), max(0, b[1] - h * k), min(W, b[2] + w * k), min(H, b[3] + h * k))
 
 
 class Detector:
@@ -106,27 +111,28 @@ class Detector:
         self.device = 0 if torch.cuda.is_available() else "cpu"
         print(f"[vision] cihaz: {'GPU ' + torch.cuda.get_device_name(0) if self.device == 0 else 'CPU'}")
 
-        self.model = YOLO(str(MODELS / args.model))
+        model = args.model if (MODELS / args.model).exists() else "ppe_sh17.pt"
+        self.model = YOLO(str(MODELS / model))
         self.names = self.model.names
-        self.cls_id = {v: k for k, v in self.names.items()}
-        print(f"[vision] KKD modeli: {args.model} siniflar={list(self.names.values())}")
+        print(f"[vision] KKD modeli: {model}")
 
         self.required: list[str] = self._load_ppe()
         self.codes = CodeReaderThread()
 
-        self.objects = None
-        if args.objects:
-            from objects import ObjectFinder
+        from faceid import FaceWorker
 
-            self.objects = ObjectFinder(self.device)
-            print(f"[vision] genis nesne kutuphanesi acik (mod: {self.objects.mode})")
+        self.faces = FaceWorker(args.face_backend, args.face_min_px, args.save_faces)
+
+        from objects import ObjectFinder, PromptFinder
+
+        self.objects = ObjectFinder(self.device) if args.objects else None
+        self.hairnet = PromptFinder(self.device, HAIRNET_PROMPTS, rate_hz=5)
 
         self.plates = None
         if args.plates:
             from plates import PlateReader
 
             self.plates = PlateReader(every=args.plate_every)
-            print(f"[vision] plaka okuma acik; aranan: {self.plates.watchlist_pretty() or '-'}")
         self.reset()
 
     # ---------------- ayarlar ----------------
@@ -140,35 +146,43 @@ class Detector:
     def set_required(self, items: list[str]) -> None:
         self.required = [i for i in items if i in PPE_ITEMS]
         PPE_FILE.write_text(json.dumps({"required": self.required}), encoding="utf-8")
-        # Durumlari yeniden degerlendir
-        for p in self.people.values():
-            p.ppe_status.clear()
+        self.ppe_status.clear()
+        for t in self.tracks.values():
+            t.ppe_yes.clear()
+            t.ppe_checks.clear()
 
     def ppe_config(self) -> dict:
         return {
             "type": "ppe",
             "required": self.required,
-            "items": [{"key": k, "name": v[0]} for k, v in PPE_ITEMS.items()],
+            "items": [{"key": k, "name": v[0] + (" (deneysel)" if k == "hairnet" else "")} for k, v in PPE_ITEMS.items()],
         }
 
     def reset(self) -> None:
-        self.people: dict[int, Person] = {}
+        self.tracks: dict[int, Track] = {}
+        self.counted_idents: set[int] = set()
         self.total_people = 0
-        self.missing_totals: dict[str, int] = {k: 0 for k in PPE_ITEMS}
-        self.ok_totals: dict[str, int] = {k: 0 for k in PPE_ITEMS}
+        self.ppe_status: dict[str, dict[str, bool]] = {}  # "i3"/"t17" -> {item: var_mi}
+        self.missing_totals = {k: 0 for k in PPE_ITEMS}
+        self.ok_totals = {k: 0 for k in PPE_ITEMS}
         self.qr_last: dict[str, float] = {}
         self.obj_last_alert: dict[str, float] = {}
-        self.obj_seen: dict[str, int] = {}  # ardisik gorulme (yanlis alarmi azaltmak icin)
+        self.obj_seen: dict[str, int] = {}
+        self.frame_i = 0
+        self.faces.reset()
+
+    def _key(self, tid: int, t: Track) -> str:
+        return f"i{t.ident}" if t.ident else f"t{tid}"
 
     # ----------------------------------------------------------------------
     def process(self, frame: np.ndarray) -> tuple[dict, list[str]]:
-        h, w = frame.shape[:2]
+        H, W = frame.shape[:2]
         now = time.time()
+        self.frame_i += 1
         boxes_out: list[dict] = []
         announcements: list[str] = []
-        new_faces: list[dict] = []
 
-        # 1) Tum KKD siniflari + takip (tek model, tek gecis)
+        # 1) KKD modeli + takip
         res = self.model.track(
             frame, persist=True, conf=self.args.conf, tracker=str(HERE / "tracker.yaml"),
             device=self.device, verbose=False, half=self.device == 0,
@@ -180,100 +194,135 @@ class Detector:
             cls = res.boxes.cls.int().cpu().tolist()
             ids = res.boxes.id.int().cpu().tolist() if res.boxes.id is not None else [None] * len(cls)
             for b, c, tid in zip(xyxy, cls, ids):
-                name = self.names[c]
-                b = tuple(float(v) for v in b)
+                name, b = self.names[c], tuple(float(v) for v in b)
                 if name == "person":
                     if tid is not None:
                         persons.append((tid, b))
                 else:
                     parts.setdefault(name, []).append(b)
 
-        # 2) Her kisi icin: kafa/yuz var mi, KKD'ler, yuz kaydi
+        # Bone (deneysel): yalnizca zorunluysa calisir
+        if "hairnet" in self.required:
+            self.hairnet.submit(frame)
+            for k, bl in self.hairnet.latest().items():
+                parts.setdefault(k, []).extend(bl)
+
+        # 2) Yuz tanima isi: kimligi olmayan (veya fotografi guncellenecek) kisiler
+        face_jobs = []
+        heads: dict[int, tuple | None] = {}
         for tid, pb in persons:
-            p = self.people.get(tid)
-            if p is None:
-                p = self.people[tid] = Person(first_seen=now)
-            p.frames += 1
-            head_zone = _head_region(pb)
-            heads = [b for n in HEAD_CLASSES for b in parts.get(n, []) if _inside(_center(b), head_zone)]
-            has_head = bool(heads)
-            if has_head:
-                p.head_frames += 1
+            hz = _head_zone(pb)
+            cands = [b for n in HEAD_CLASSES for b in parts.get(n, []) if _inside(_center(b), hz)]
+            heads[tid] = max(cands, key=_area) if cands else None
+            t = self.tracks.get(tid)
+            if t is None:
+                t = self.tracks[tid] = Track(first_seen=now)
+            if heads[tid] is not None and (t.ident is None or self.frame_i - t.last_face_try > 12):
+                face_jobs.append((tid, _expand(heads[tid], 0.35, W, H)))
+                t.last_face_try = self.frame_i
+        self.faces.submit(frame, face_jobs)
 
-            # Sayim: yeterli boyut + birkac karede kafa/yuz gorulmus olmali (el/kol sayilmaz)
-            tall_enough = (pb[3] - pb[1]) >= h * self.args.min_height
-            if not p.counted and tall_enough and p.head_frames >= self.args.min_frames:
-                p.counted = True
+        new_faces = []
+        for ev in self.faces.take_events():
+            if ev["file"]:
+                new_faces.append({"id": ev["ident"], "file": ev["file"], "time": ev["time"]})
+
+        # 3) Kisi basina: sayim, KKD, kutu
+        for tid, pb in persons:
+            t = self.tracks[tid]
+            t.frames += 1
+            head = heads[tid]
+            if head is not None:
+                t.head_frames += 1
+            tall = (pb[3] - pb[1]) >= H * self.args.min_height or head is not None and _area(head) > (W * H) * 0.004
+
+            # Yuz kimligi geldi mi?
+            ident = self.faces.ident_of(tid)
+            if ident is not None and t.ident != ident:
+                old_key = self._key(tid, t)
+                t.ident = ident
+                if ident in self.counted_idents:
+                    if t.counted_by_track:  # arkadan sayilmisti, aslinda bilinen kisi -> geri al
+                        self.total_people -= 1
+                        t.counted_by_track = False
+                else:
+                    self.counted_idents.add(ident)
+                    if t.counted_by_track:
+                        t.counted_by_track = False  # zaten sayilmisti, kimlige bagla
+                    else:
+                        self.total_people += 1
+                # Track uzerinde verilmis KKD kararlarini kimlige tasi (tekrar uyari olmasin)
+                if old_key in self.ppe_status:
+                    self.ppe_status.setdefault(self._key(tid, t), {}).update(self.ppe_status.pop(old_key))
+
+            # Yuz hic gorunmuyorsa (arkadan) uzun sure kafa gorulunce yine say
+            counted = t.ident is not None or t.counted_by_track
+            if not counted and tall and t.head_frames >= self.args.noface_frames:
+                t.counted_by_track = True
                 self.total_people += 1
+                counted = True
 
-            # KKD oylama (yalnizca sayilmis kisiler icin)
-            if p.counted:
+            # KKD oylama
+            key = self._key(tid, t)
+            status = self.ppe_status.setdefault(key, {})
+            if counted:
+                hz = _head_zone(pb)
                 for item in self.required:
                     head_item = PPE_ITEMS[item][2]
-                    if head_item and not has_head:
-                        continue  # kafa gorunmuyorsa kafa KKD'si hakkinda karar verme
-                    zone = head_zone if head_item else pb
+                    if head_item and head is None:
+                        continue
+                    zone = _expand(head, 0.6, W, H) if head_item else pb
                     found = any(_inside(_center(b), zone) for b in parts.get(item, []))
-                    p.ppe_checks[item] = p.ppe_checks.get(item, 0) + 1
-                    p.ppe_yes[item] = p.ppe_yes.get(item, 0) + (1 if found else 0)
-                    if item not in p.ppe_status and p.ppe_checks[item] >= self.args.ppe_frames:
-                        ok = p.ppe_yes[item] / p.ppe_checks[item] >= self.args.ppe_ratio
-                        p.ppe_status[item] = ok
-                        name, missing_word, _ = PPE_ITEMS[item]
+                    t.ppe_checks[item] = t.ppe_checks.get(item, 0) + 1
+                    t.ppe_yes[item] = t.ppe_yes.get(item, 0) + (1 if found else 0)
+                    if item not in status and t.ppe_checks[item] >= self.args.ppe_frames:
+                        ok = t.ppe_yes[item] / t.ppe_checks[item] >= self.args.ppe_ratio
+                        status[item] = ok
                         if ok:
                             self.ok_totals[item] += 1
                         else:
                             self.missing_totals[item] += 1
-                            announcements.append(
-                                f"Dikkat, {missing_word} kişi. {missing_word.capitalize()} toplam {self.missing_totals[item]}."
-                            )
+                            word = PPE_ITEMS[item][1]
+                            who = f"Kişi {t.ident}" if t.ident else "Bir kişi"
+                            announcements.append(f"Dikkat, {who} {word}. {word.capitalize()} toplam {self.missing_totals[item]}.")
 
-            # Yuz kaydi
-            if p.counted and self.args.save_faces:
-                faces = [b for b in parts.get("face", []) if _inside(_center(b), head_zone)]
-                if faces:
-                    fb = max(faces, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
-                    saved = self._maybe_save_face(tid, p, frame, fb, now)
-                    if saved:
-                        new_faces.append(saved)
-
-            # Kutu + etiket
-            missing = [PPE_ITEMS[i][0] for i, ok in p.ppe_status.items() if not ok and i in self.required]
-            if not p.counted:
-                label, color = f"#{tid} ?", COLORS["pending"]
+            # Kutu: yalnizca kafa/yuz bolgesi
+            if head is None:
+                continue
+            name = f"K{t.ident}" if t.ident else f"#{tid}"
+            missing = [PPE_ITEMS[i][0] for i in self.required if status.get(i) is False]
+            if not counted:
+                label, color = f"{name} ?", COLORS["pending"]
             elif missing:
-                label, color = f"#{tid} EKSİK: {', '.join(missing)}", COLORS["bad"]
-            elif self.required and all(i in p.ppe_status for i in self.required):
-                label, color = f"#{tid} KKD tamam", COLORS["ok"]
+                label, color = f"{name} EKSİK: {', '.join(missing)}", COLORS["bad"]
+            elif self.required and all(i in status for i in self.required):
+                label, color = f"{name} KKD tamam", COLORS["ok"]
             else:
-                label, color = f"#{tid} Kişi", COLORS["pending"]
-            boxes_out.append(_box(pb, w, h, label, color))
+                label, color = name, COLORS["pending"]
+            boxes_out.append(_box(_expand(head, 0.12, W, H), W, H, label, color))
 
-        # KKD parcalarini ince cizgiyle goster
+        # KKD parcalari: kucuk, ince kutular
         for name, blist in parts.items():
-            tr = PPE_ITEMS.get(name, (name,))[0] if name in PPE_ITEMS else {
-                "head": "kafa", "face": "yüz", "hands": "el", "tool": "alet", "shoes": "ayakkabı",
-            }.get(name)
-            if not tr:
+            if name not in PPE_ITEMS:
                 continue
             for b in blist:
-                boxes_out.append(_box(b, w, h, tr, "#f2c94c" if name in PPE_ITEMS else "#6b7280", thin=True))
+                boxes_out.append(_box(b, W, H, PPE_ITEMS[name][0], "#f2c94c", small=True))
 
-        # 3) QR / barkod (ayri thread)
+        # 4) QR / barkod
         self.codes.submit(frame)
         for text, xyxy, kind in self.codes.latest():
-            boxes_out.append(_box(xyxy, w, h, f"{kind}: {text[:40]}", "#f2c94c"))
+            boxes_out.append(_box(xyxy, W, H, f"{kind}: {text[:40]}", "#f2c94c"))
             if now - self.qr_last.get(text, 0) > self.args.qr_cooldown:
                 announcements.append(f"{'QR kod' if kind == 'QR' else 'Barkod'}: {text}")
             self.qr_last[text] = now
 
-        # 4) Genis nesne kutuphanesi (ayri thread)
+        # 5) Genis nesne kutuphanesi
         objects_now: dict[str, int] = {}
         if self.objects is not None:
             self.objects.submit(frame)
             for xyxy, name, conf in self.objects.latest():
                 objects_now[name] = objects_now.get(name, 0) + 1
-                boxes_out.append(_box(xyxy, w, h, f"{name} {conf:.2f}", "#22d3ee"))
+                boxes_out.append(_box(xyxy, W, H, name, "#22d3ee", small=True))
             for name in list(self.obj_seen):
                 if name not in objects_now:
                     self.obj_seen[name] = 0
@@ -284,21 +333,22 @@ class Detector:
                     self.obj_last_alert[name] = now
                     announcements.append(f"Dikkat: {name} görüldü.")
 
-        # 5) Plakalar
+        # 6) Plakalar
         plate_captures: list[dict] = []
         if self.plates is not None:
             pboxes, pann, plate_captures = self.plates.process(frame)
             for xyxy, label, wanted in pboxes:
-                boxes_out.append(_box(xyxy, w, h, label, "#ff4d4d" if wanted else "#c792ea"))
+                boxes_out.append(_box(xyxy, W, H, label, "#ff4d4d" if wanted else "#c792ea", small=not wanted))
             announcements.extend(pann)
 
-        visible = sum(1 for tid, _ in persons if self.people[tid].counted)
-        result = {
+        visible = sum(1 for tid, _ in persons if self.tracks[tid].ident or self.tracks[tid].counted_by_track)
+        return {
             "type": "detections",
             "boxes": boxes_out,
             "counts": {
                 "visible": visible,
                 "total_people": self.total_people,
+                "identities": self.faces.count,
                 "ppe": [
                     {"key": k, "name": PPE_ITEMS[k][0], "ok": self.ok_totals[k], "missing": self.missing_totals[k]}
                     for k in self.required
@@ -308,34 +358,7 @@ class Detector:
             "plate_captures": plate_captures,
             "objects": objects_now,
             "objects_ms": self.objects.ms if self.objects else None,
-        }
-        return result, announcements
-
-    # ----------------------------------------------------------------------
-    def _maybe_save_face(self, tid: int, p: Person, frame: np.ndarray, fb, now: float) -> dict | None:
-        """Kisinin en net yuzunu kaydet (ilk kayit + belirgin iyilesmede en fazla 3 guncelleme)."""
-        x1, y1, x2, y2 = (int(v) for v in fb)
-        fw, fh = x2 - x1, y2 - y1
-        if fw < self.args.face_min_px or fh < self.args.face_min_px:
-            return None
-        # Biraz pay birak
-        pad = int(max(fw, fh) * 0.35)
-        H, W = frame.shape[:2]
-        crop = frame[max(0, y1 - pad):min(H, y2 + pad), max(0, x1 - pad):min(W, x2 + pad)]
-        if crop.size == 0:
-            return None
-        sharp = cv2.Laplacian(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
-        quality = fw * fh * min(sharp, 500) / 500
-        if p.face_file and (quality < p.face_quality * 1.5 or p.face_saves >= 3):
-            return None
-        day = time.strftime("%Y%m%d", time.localtime(now))
-        folder = FACES / day
-        folder.mkdir(parents=True, exist_ok=True)
-        name = p.face_file or f"kisi_{time.strftime('%H%M%S', time.localtime(p.first_seen))}_{tid}.jpg"
-        cv2.imwrite(str(folder / name), crop, [cv2.IMWRITE_JPEG_QUALITY, 92])
-        first = p.face_file is None
-        p.face_file, p.face_quality, p.face_saves = name, quality, p.face_saves + 1
-        return {"id": tid, "file": f"{day}/{name}", "time": now, "updated": not first}
+        }, announcements
 
 
 # --------------------------------------------------------------------------
@@ -379,7 +402,6 @@ def read_codes(frame: np.ndarray) -> list[tuple[str, tuple[float, float, float, 
     _code_frame += 1
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     out, seen = [], set()
-    # Her karede normal boyut; 3 karede bir de 2x buyutulmus hali (uzaktaki kucuk QR'lar icin)
     passes = [(1.0, gray)] + ([(2.0, None)] if _code_frame % 3 == 0 else [])
     for scale, img in passes:
         if img is None:
@@ -398,9 +420,9 @@ def read_codes(frame: np.ndarray) -> list[tuple[str, tuple[float, float, float, 
     return out
 
 
-def _box(xyxy, w: int, h: int, label: str, color: str, thin: bool = False) -> dict:
+def _box(xyxy, w: int, h: int, label: str, color: str, small: bool = False) -> dict:
     x1, y1, x2, y2 = (float(v) for v in xyxy)
-    return {"x1": x1 / w, "y1": y1 / h, "x2": x2 / w, "y2": y2 / h, "label": label, "color": color, "thin": thin}
+    return {"x1": x1 / w, "y1": y1 / h, "x2": x2 / w, "y2": y2 / h, "label": label, "color": color, "small": small}
 
 
 # --------------------------------------------------------------------------
@@ -445,7 +467,6 @@ def run(args: argparse.Namespace) -> None:
                                 print("[vision] sayaclar sifirlandi")
                             elif t == "watchlist_set" and det.plates is not None:
                                 det.plates.set_watchlist(cmd.get("plates", []))
-                                print(f"[vision] aranan plakalar: {det.plates.watchlist_pretty()}")
                                 send_config()
                             elif t == "ppe_set":
                                 det.set_required(cmd.get("required", []))
@@ -453,7 +474,6 @@ def run(args: argparse.Namespace) -> None:
                                 send_config()
                             elif t == "objects_set" and det.objects is not None:
                                 det.objects.configure(cmd)
-                                print(f"[vision] nesne ayari: mod={det.objects.mode} liste={det.objects.items}")
                                 send_config()
                             elif t == "hello":
                                 send_config()
@@ -481,7 +501,7 @@ def run(args: argparse.Namespace) -> None:
                     for text in announcements:
                         print(f"[vision] anons: {text}")
                         send({"type": "announce", "text": text})
-        except Exception as e:  # sunucu kapali vb.
+        except Exception as e:
             print(f"[vision] baglanti hatasi: {e!r}; 2 sn sonra tekrar")
             time.sleep(2)
 
@@ -489,19 +509,20 @@ def run(args: argparse.Namespace) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Glass Stream goruntu isleme servisi (ISG)")
     ap.add_argument("--server", default="ws://localhost:8000/vision")
-    ap.add_argument("--model", default="ppe_sh17.pt", help="SH17 KKD modeli (vision/models icinde)")
+    ap.add_argument("--model", default="ppe_sh17m.pt", help="SH17 KKD modeli (vision/models icinde)")
     ap.add_argument("--conf", type=float, default=0.35, help="tespit esigi")
-    ap.add_argument("--min-frames", type=int, default=3, help="kisiyi saymak icin kafa/yuz goruldugu kare sayisi")
     ap.add_argument("--min-height", type=float, default=0.12, help="sayilacak kisinin min. yuksekligi (kare orani)")
+    ap.add_argument("--noface-frames", type=int, default=25, help="yuz gorunmeden saymak icin gereken kafa karesi")
     ap.add_argument("--ppe-frames", type=int, default=8, help="KKD kararini vermek icin kontrol edilen kare")
     ap.add_argument("--ppe-ratio", type=float, default=0.3, help="KKD 'var' sayilmasi icin gorulme orani")
-    ap.add_argument("--no-faces", dest="save_faces", action="store_false", help="yuz kaydini kapat")
-    ap.add_argument("--face-min-px", type=int, default=40, help="kaydedilecek yuzun min. boyutu (piksel)")
-    ap.add_argument("--qr-cooldown", type=float, default=15.0, help="ayni QR'i tekrar okumadan once bekleme (sn)")
-    ap.add_argument("--no-objects", dest="objects", action="store_false", help="genis nesne kutuphanesini kapat")
-    ap.add_argument("--obj-cooldown", type=float, default=30.0, help="ayni nesne uyarisi arasi bekleme (sn)")
-    ap.add_argument("--no-plates", dest="plates", action="store_false", help="plaka okumayi kapat")
-    ap.add_argument("--plate-every", type=int, default=3, help="plaka okumayi kac karede bir yap")
+    ap.add_argument("--face-backend", default="arcface", choices=["arcface", "sface"])
+    ap.add_argument("--no-faces", dest="save_faces", action="store_false", help="yuz fotografi kaydini kapat")
+    ap.add_argument("--face-min-px", type=int, default=28, help="kaydedilecek yuzun min. boyutu (piksel)")
+    ap.add_argument("--qr-cooldown", type=float, default=15.0)
+    ap.add_argument("--no-objects", dest="objects", action="store_false")
+    ap.add_argument("--obj-cooldown", type=float, default=30.0)
+    ap.add_argument("--no-plates", dest="plates", action="store_false")
+    ap.add_argument("--plate-every", type=int, default=3)
     run(ap.parse_args())
 
 
