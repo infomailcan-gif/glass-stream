@@ -165,9 +165,15 @@ final class FrameUploader: NSObject, URLSessionWebSocketDelegate, @unchecked Sen
 final class Throttle: @unchecked Sendable {
   private let lock = NSLock()
   private var last: TimeInterval = 0
-  private let interval: TimeInterval
+  private var interval: TimeInterval
 
   init(perSecond: Double) { interval = 1.0 / perSecond }
+
+  func setRate(perSecond: Double) {
+    lock.lock()
+    interval = 1.0 / perSecond
+    lock.unlock()
+  }
 
   func allow() -> Bool {
     lock.lock()

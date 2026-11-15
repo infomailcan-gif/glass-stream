@@ -33,6 +33,18 @@ from websockets.sync.client import connect
 HERE = Path(__file__).resolve().parent
 MODELS = HERE / "models"
 PPE_FILE = HERE / "ppe.json"
+MODELS_FILE = HERE / "models.json"
+
+# Web ve mobilden acilip kapatilabilen modeller (anahtar -> ad, aciklama, varsayilan)
+MODEL_INFO: dict[str, tuple[str, str, bool]] = {
+    "ppe": ("Kişi ve KKD", "SH17-M · kişi sayımı, baret, maske, yelek…", True),
+    "faces": ("Yüz tanıma", "YuNet + ArcFace · tekrar sayımı önler, yüz kaydı", True),
+    "objects": ("Nesne kütüphanesi", "YOLOE-L · 4.585 tür veya özel liste", True),
+    "plates": ("Plaka okuma", "fast-alpr · aranan plaka alarmı", True),
+    "qr": ("QR / Barkod", "zxing-cpp", True),
+    "hairnet": ("Bone tespiti", "YOLOE metin istemi · deneysel", False),
+    "claude": ("Claude asistan", "Claude Code · sesli soru-cevap", True),
+}
 
 # KKD anahtari -> (Turkce ad, "eksik" hali, kafada mi aranir)
 PPE_ITEMS: dict[str, tuple[str, str, bool]] = {
@@ -117,6 +129,7 @@ class Detector:
         print(f"[vision] KKD modeli: {model}")
 
         self.required: list[str] = self._load_ppe()
+        self.enabled: dict[str, bool] = self._load_models()
         self.codes = CodeReaderThread()
 
         from faceid import FaceWorker
@@ -126,6 +139,8 @@ class Detector:
         from objects import ObjectFinder, PromptFinder
 
         self.objects = ObjectFinder(self.device) if args.objects else None
+        if self.objects is not None:
+            self.objects.enabled = self.enabled["objects"]  # tek kaynak: model anahtarlari
         self.hairnet = PromptFinder(self.device, HAIRNET_PROMPTS, rate_hz=5)
 
         self.plates = None
@@ -158,6 +173,28 @@ class Detector:
             "items": [{"key": k, "name": v[0] + (" (deneysel)" if k == "hairnet" else "")} for k, v in PPE_ITEMS.items()],
         }
 
+    # ---------------- model anahtarlari ----------------
+    def _load_models(self) -> dict[str, bool]:
+        on = {k: v[2] for k, v in MODEL_INFO.items()}
+        try:
+            on.update({k: bool(v) for k, v in json.loads(MODELS_FILE.read_text(encoding="utf-8")).items() if k in on})
+        except (OSError, ValueError):
+            pass
+        return on
+
+    def set_models(self, patch: dict) -> None:
+        for k, v in patch.items():
+            if k in self.enabled:
+                self.enabled[k] = bool(v)
+        MODELS_FILE.write_text(json.dumps(self.enabled), encoding="utf-8")
+        if self.objects is not None:
+            self.objects.enabled = self.enabled["objects"]
+
+    def models_config(self) -> dict:
+        return {"type": "models", "items": [
+            {"key": k, "name": n, "desc": d, "on": self.enabled[k]} for k, (n, d, _) in MODEL_INFO.items()
+        ]}
+
     def reset(self) -> None:
         self.tracks: dict[int, Track] = {}
         self.counted_idents: set[int] = set()
@@ -183,13 +220,15 @@ class Detector:
         announcements: list[str] = []
 
         # 1) KKD modeli + takip
-        res = self.model.track(
-            frame, persist=True, conf=self.args.conf, tracker=str(HERE / "tracker.yaml"),
-            device=self.device, verbose=False, half=self.device == 0,
-        )[0]
         persons: list[tuple[int, tuple]] = []
         parts: dict[str, list[tuple]] = {}
-        if res.boxes is not None and len(res.boxes):
+        res = None
+        if self.enabled["ppe"]:
+            res = self.model.track(
+                frame, persist=True, conf=self.args.conf, tracker=str(HERE / "tracker.yaml"),
+                device=self.device, verbose=False, half=self.device == 0,
+            )[0]
+        if res is not None and res.boxes is not None and len(res.boxes):
             xyxy = res.boxes.xyxy.cpu().numpy()
             cls = res.boxes.cls.int().cpu().tolist()
             ids = res.boxes.id.int().cpu().tolist() if res.boxes.id is not None else [None] * len(cls)
@@ -202,7 +241,7 @@ class Detector:
                     parts.setdefault(name, []).append(b)
 
         # Bone (deneysel): yalnizca zorunluysa calisir
-        if "hairnet" in self.required:
+        if "hairnet" in self.required and self.enabled["hairnet"] and self.enabled["ppe"]:
             self.hairnet.submit(frame)
             for k, bl in self.hairnet.latest().items():
                 parts.setdefault(k, []).extend(bl)
@@ -220,7 +259,8 @@ class Detector:
             if heads[tid] is not None and (t.ident is None or self.frame_i - t.last_face_try > 12):
                 face_jobs.append((tid, _expand(heads[tid], 0.35, W, H)))
                 t.last_face_try = self.frame_i
-        self.faces.submit(frame, face_jobs)
+        if self.enabled["faces"]:
+            self.faces.submit(frame, face_jobs)
 
         new_faces = []
         for ev in self.faces.take_events():
@@ -309,8 +349,9 @@ class Detector:
                 boxes_out.append(_box(b, W, H, PPE_ITEMS[name][0], "#f2c94c", small=True))
 
         # 4) QR / barkod
-        self.codes.submit(frame)
-        for text, xyxy, kind in self.codes.latest():
+        if self.enabled["qr"]:
+            self.codes.submit(frame)
+        for text, xyxy, kind in (self.codes.latest() if self.enabled["qr"] else []):
             boxes_out.append(_box(xyxy, W, H, f"{kind}: {text[:40]}", "#f2c94c"))
             if now - self.qr_last.get(text, 0) > self.args.qr_cooldown:
                 announcements.append(f"{'QR kod' if kind == 'QR' else 'Barkod'}: {text}")
@@ -318,7 +359,7 @@ class Detector:
 
         # 5) Genis nesne kutuphanesi
         objects_now: dict[str, int] = {}
-        if self.objects is not None:
+        if self.objects is not None and self.enabled["objects"]:
             self.objects.submit(frame)
             for xyxy, name, conf in self.objects.latest():
                 objects_now[name] = objects_now.get(name, 0) + 1
@@ -335,7 +376,7 @@ class Detector:
 
         # 6) Plakalar
         plate_captures: list[dict] = []
-        if self.plates is not None:
+        if self.plates is not None and self.enabled["plates"]:
             pboxes, pann, plate_captures = self.plates.process(frame)
             for xyxy, label, wanted in pboxes:
                 boxes_out.append(_box(xyxy, W, H, label, "#ff4d4d" if wanted else "#c792ea", small=not wanted))
@@ -465,6 +506,7 @@ def run(args: argparse.Namespace) -> None:
 
                 def send_config() -> None:
                     send_state()
+                    send(det.models_config())
                     send(det.ppe_config())
                     if det.objects is not None:
                         send(det.objects.config())
@@ -513,9 +555,16 @@ def run(args: argparse.Namespace) -> None:
                                     ok, msg = rec.stop()
                                 say(msg)
                                 send_state()
+                            elif t == "models_set":  # {"type":"models_set","enabled":{"faces":false,...}}
+                                det.set_models(cmd.get("enabled", {}))
+                                print(f"[vision] modeller: {det.enabled}")
+                                send(det.models_config())
                             elif t == "ask":  # Claude'a soru (sesli komut veya web)
                                 print(f"[asistan] soru: {cmd.get('text', '')[:120]}")
-                                assistant.ask(cmd.get("text", ""), cmd.get("photo"), state["frame"])
+                                if det.enabled["claude"]:
+                                    assistant.ask(cmd.get("text", ""), cmd.get("photo"), state["frame"])
+                                else:
+                                    say("Claude asistanı kapalı. Modeller bölümünden açabilirsin.")
                             elif t == "ask_cancel":
                                 assistant.cancel()
                             elif t == "hello":

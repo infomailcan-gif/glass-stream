@@ -58,7 +58,7 @@ final class BridgeModel {
   @ObservationIgnored private let sessionTokens = ListenerTokenBag()
   @ObservationIgnored private let streamTokens = ListenerTokenBag()
   @ObservationIgnored private let uploader = FrameUploader()
-  @ObservationIgnored private let previewThrottle = Throttle(perSecond: 5)
+  @ObservationIgnored private let previewThrottle = Throttle(perSecond: 4)
 
   init(wearables: WearablesInterface) {
     self.wearables = wearables
@@ -307,11 +307,77 @@ final class BridgeModel {
     speaker.say("Glass Bridge sesli bildirim testi.")
   }
 
+  // MARK: - Canli kutular, modeller, kayitlar
+
+  struct DetBox: Identifiable {
+    let id: Int
+    let x1, y1, x2, y2: Double
+    let label: String
+    let color: String
+    let small: Bool
+  }
+
+  struct ModelItem: Identifiable {
+    let key: String
+    let name: String
+    let desc: String
+    var on: Bool
+    var id: String { key }
+  }
+
+  struct RecFile: Identifiable {
+    let file: String
+    let mb: Double
+    let time: Double
+    var id: String { file }
+    var annotated: Bool { file.contains("-kkd") }
+  }
+
+  var detBoxes: [DetBox] = []
+  var visibleCount = 0
+  var totalPeople = 0
+  var analysisLatency: Int?
+  var models: [ModelItem] = []
+  var recordings: [RecFile] = []
+  var recordingSince: Double?
+  var recordAnnotated = true
+
+  /// Canli sekmesi acikken onizleme 15 kare/sn, degilse 4 (pil ve islemci icin)
+  var liveActive = false {
+    didSet { previewThrottle.setRate(perSecond: liveActive ? 15 : 4) }
+  }
+
+  func toggleAI() {
+    uploader.sendJSON(["type": "ai", "on": !(aiOn ?? false)])
+  }
+
+  func toggleRecord() {
+    if recordingActive {
+      uploader.sendJSON(["type": "record", "action": "stop"])
+    } else {
+      uploader.sendJSON(["type": "record", "action": "start", "mode": recordAnnotated ? "annotated" : "raw"])
+    }
+  }
+
+  func setModel(_ key: String, on: Bool) {
+    if let i = models.firstIndex(where: { $0.key == key }) { models[i].on = on }
+    uploader.sendJSON(["type": "models_set", "enabled": [key: on]])
+  }
+
+  /// PC'deki kayit dosyasinin adresi (ws://host:8000/ingest -> http://host:8000/recordings/...)
+  func recordingURL(_ f: RecFile) -> URL? {
+    guard var c = URLComponents(string: serverURL.trimmingCharacters(in: .whitespaces)) else { return nil }
+    c.scheme = c.scheme == "wss" ? "https" : "http"
+    c.path = "/recordings/" + f.file
+    return c.url
+  }
+
   // MARK: - PC'den gelen mesajlar
 
   var aiOn: Bool?
   var recordingActive = false
   var assistantText: String?
+  var lastQuestion: String?
 
   private func handleServerMessage(_ text: String) {
     guard let data = text.data(using: .utf8),
@@ -327,9 +393,40 @@ final class BridgeModel {
       voice.conversationMode = aiOn ?? false
     case "recording":
       recordingActive = obj["active"] as? Bool ?? false
+      recordingSince = obj["since"] as? Double
+      if let files = obj["files"] as? [[String: Any]] {
+        recordings = files.compactMap { f in
+          guard let name = f["file"] as? String else { return nil }
+          return RecFile(file: name, mb: f["mb"] as? Double ?? 0, time: f["time"] as? Double ?? 0)
+        }
+      }
+    case "models":
+      if let items = obj["items"] as? [[String: Any]] {
+        models = items.compactMap { m in
+          guard let key = m["key"] as? String else { return nil }
+          return ModelItem(key: key, name: m["name"] as? String ?? key, desc: m["desc"] as? String ?? "",
+                           on: m["on"] as? Bool ?? false)
+        }
+      }
+    case "detections":
+      if let c = obj["counts"] as? [String: Any] {
+        visibleCount = c["visible"] as? Int ?? 0
+        totalPeople = c["total_people"] as? Int ?? 0
+      }
+      analysisLatency = obj["latency_ms"] as? Int
+      // Kutulari yalnizca Canli sekmesi acikken coz (gereksiz is yapma)
+      guard liveActive, let boxes = obj["boxes"] as? [[String: Any]] else { return }
+      detBoxes = boxes.enumerated().map { i, b in
+        DetBox(id: i, x1: b["x1"] as? Double ?? 0, y1: b["y1"] as? Double ?? 0,
+               x2: b["x2"] as? Double ?? 0, y2: b["y2"] as? Double ?? 0,
+               label: b["label"] as? String ?? "", color: b["color"] as? String ?? "#8AB4FF",
+               small: b["small"] as? Bool ?? false)
+      }
     case "assistant":
-      // Claude cevabi: {"type":"assistant","text":"...","say":"..."}; "say" varsa okunur
-      if let t = obj["text"] as? String { assistantText = t }
+      // Claude: {"event":"question"|"delta"|"done", "text":...} ve okunacak {"say":...}
+      let event = obj["event"] as? String
+      if event == "question" { lastQuestion = obj["text"] as? String; assistantText = nil }
+      if event == "delta" || event == "done", let t = obj["text"] as? String { assistantText = t }
       if let say = obj["say"] as? String, !say.isEmpty { announce(say) }
     default:
       break
