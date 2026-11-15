@@ -1,0 +1,13 @@
+# Kafaya takili (surekli hareket eden) kamera icin BoT-SORT ayarlari
+tracker_type: botsort
+track_high_thresh: 0.35
+track_low_thresh: 0.1
+new_track_thresh: 0.5       # yeni kisi numarasi acmak icin daha emin ol (ID sismesini azaltir)
+track_buffer: 150           # kaybolan kisiyi ~6 sn hatirla (bas cevrilince geri gelir)
+match_thresh: 0.8
+fuse_score: True
+gmc_method: sparseOptFlow   # kamera (bas) hareketini telafi et
+proximity_thresh: 0.3
+appearance_thresh: 0.6      # gorunusten yeniden tanima esigi
+with_reid: True             # kisiyi kiyafet/gorunusten yeniden tani
+model: auto                 # dedektorun kendi ozelliklerini kullan (ek model yok)

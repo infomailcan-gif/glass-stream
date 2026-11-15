@@ -55,14 +55,20 @@
   <aside>
     <div>
       <h2>Sayaçlar</h2>
-      <div class="counts">
+      <div class="counts" id="counts">
         <div class="card"><b id="cVisible">0</b><span>Şu an görünen</span></div>
         <div class="card"><b id="cTotal">0</b><span>Toplam kişi</span></div>
-        <div class="card ok"><b id="cMask">0</b><span>Maskeli</span></div>
-        <div class="card bad"><b id="cNoMask">0</b><span>Maskesiz</span></div>
       </div>
-      <p id="maskNote" style="color:var(--muted);font-size:12px;margin:8px 0 0"></p>
       <button id="reset" style="margin-top:8px">Sayaçları sıfırla</button>
+    </div>
+    <div>
+      <h2>Zorunlu KKD</h2>
+      <div id="ppeBoxes" style="display:flex;flex-wrap:wrap;gap:6px 12px"></div>
+      <p style="color:var(--muted);font-size:12px;margin:6px 0 0">Seçilenler eksikse gözlükten sesli uyarı verilir.</p>
+    </div>
+    <div id="faceWrap" style="display:none">
+      <h2>Sayılan kişiler (yüz)</h2>
+      <div id="faces" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px"></div>
     </div>
     <div>
       <h2>Aranan plakalar</h2>
@@ -90,7 +96,7 @@ const stage = document.getElementById("stage");
 const canvas = document.getElementById("overlay");
 const ctx = canvas.getContext("2d");
 const empty = document.getElementById("empty");
-let frames = 0, lastUrl = null, lastBlob = null, lastDet = null, lastDetAt = 0, ws;
+let visFps = null, frames = 0, lastUrl = null, lastBlob = null, lastDet = null, lastDetAt = 0, ws;
 
 function setDot(id, on, txt) {
   document.getElementById(id + "Dot").classList.toggle("on", on);
@@ -120,9 +126,10 @@ function onDetections(m) {
   lastDet = m; lastDetAt = Date.now();
   const c = m.counts;
   cVisible.textContent = c.visible; cTotal.textContent = c.total_people;
-  cMask.textContent = c.mask; cNoMask.textContent = c.no_mask;
-  maskNote.textContent = m.mask_model ? "" : "Maske modeli yüklü değil — sadece kişi sayımı.";
-  setDot("vis", true, `Analiz: ${m.fps ?? "…"} FPS · ${m.latency_ms} ms`);
+  renderPpeCounts(c.ppe || []);
+  if (m.faces?.length) onFaces(m.faces);
+  if (m.fps != null) visFps = m.fps;
+  setDot("vis", true, `Analiz: ${visFps ?? "…"} FPS · ${m.latency_ms} ms`);
   drawOverlay();
 }
 
@@ -132,6 +139,56 @@ function onAnnounce(text) {
   li.append(text);
   log.prepend(li);
   while (log.children.length > 30) log.lastChild.remove();
+}
+
+// ---- KKD sayaclari ve secimi ----
+function renderPpeCounts(list) {
+  const key = list.map((p) => p.key).join(",");
+  if (counts.dataset.key !== key) {
+    counts.dataset.key = key;
+    counts.querySelectorAll(".ppe").forEach((e) => e.remove());
+    for (const p of list) {
+      counts.insertAdjacentHTML("beforeend",
+        `<div class="card ok ppe"><b data-ok="${p.key}">0</b><span>${p.name} var</span></div>` +
+        `<div class="card bad ppe"><b data-miss="${p.key}">0</b><span>${p.name} eksik</span></div>`);
+    }
+  }
+  for (const p of list) {
+    counts.querySelector(`[data-ok="${p.key}"]`).textContent = p.ok;
+    counts.querySelector(`[data-miss="${p.key}"]`).textContent = p.missing;
+  }
+}
+function onPpeConfig(m) {
+  ppeBoxes.innerHTML = "";
+  for (const it of m.items) {
+    const lab = document.createElement("label");
+    lab.style.cssText = "display:flex;gap:4px;align-items:center;cursor:pointer";
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = m.required.includes(it.key);
+    cb.onchange = () => {
+      const req = [...ppeBoxes.querySelectorAll("input")].filter((x) => x.checked).map((x) => x.dataset.key);
+      ws.send(JSON.stringify({ type: "ppe_set", required: req }));
+    };
+    cb.dataset.key = it.key;
+    lab.append(cb, it.name);
+    ppeBoxes.append(lab);
+  }
+}
+const faceEls = {};
+function onFaces(list) {
+  faceWrap.style.display = "block";
+  for (const f of list) {
+    const src = `/faces/${f.file}?v=${Math.round(f.time * 1000)}`;
+    let el = faceEls[f.file];
+    if (!el) {
+      el = faceEls[f.file] = document.createElement("a");
+      el.target = "_blank";
+      el.innerHTML = `<img style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px"><div style="font-size:11px;color:var(--muted)"></div>`;
+      faces.prepend(el);
+    }
+    el.href = src; el.querySelector("img").src = src;
+    el.querySelector("div").textContent = `#${f.id} · ${new Date(f.time * 1000).toLocaleTimeString()}`;
+  }
 }
 
 let watchlist = [];
@@ -182,6 +239,7 @@ function connect() {
       if (m.type === "status") setDot("src", m.sources > 0, m.sources > 0 ? "Gözlük: yayında" : "Gözlük: yok");
       else if (m.type === "detections") { onDetections(m); if (m.plate_captures?.length) onCaptures(m.plate_captures); }
       else if (m.type === "watchlist") { watchlist = m.plates; renderWatch(); }
+      else if (m.type === "ppe") onPpeConfig(m);
       else if (m.type === "announce") onAnnounce(m.text);
       return;
     }

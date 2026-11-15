@@ -9,3 +9,5 @@ vision/models/
 vision/captures/
 __pycache__/
 vision/watchlist.txt
+vision/faces/
+vision/ppe.json
