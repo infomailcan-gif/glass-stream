@@ -41,7 +41,8 @@ MODEL_INFO: dict[str, tuple[str, str, bool]] = {
     "ppe": ("Kişi ve KKD", "SH17-M · kişi sayımı, baret, maske, yelek…", True),
     "faces": ("Yüz tanıma", "YuNet + ArcFace · tekrar sayımı önler, yüz kaydı", True),
     "objects": ("Nesne kütüphanesi", "YOLOE-L · 4.585 tür veya özel liste", True),
-    "plates": ("Plaka okuma", "fast-alpr · aranan plaka alarmı", True),
+    "vehicles": ("Araç tanıma", "YOLO11 · tür, renk, plaka eşleştirme, araç günlüğü", True),
+    "plates": ("Plaka okuma", "fast-alpr · tüm plakalar + aranan plaka alarmı", True),
     "qr": ("QR / Barkod", "zxing-cpp", True),
     "hairnet": ("Bone tespiti", "YOLOE metin istemi · deneysel", False),
     "claude": ("Claude asistan", "Claude Code · sesli soru-cevap", True),
@@ -143,6 +144,10 @@ class Detector:
         if self.objects is not None:
             self.objects.enabled = self.enabled["objects"]  # tek kaynak: model anahtarlari
         self.hairnet = PromptFinder(self.device, HAIRNET_PROMPTS, rate_hz=5)
+
+        from vehicles import VehicleTracker
+
+        self.vehicles = VehicleTracker(self.device)
 
         self.plates = None
         if args.plates:
@@ -381,13 +386,24 @@ class Detector:
                     self.obj_last_alert[name] = now
                     announcements.append(f"Dikkat: {name} görüldü.")
 
-        # 6) Plakalar
+        # 6) Araclar (tur + renk) ve plakalar; plaka icinde bulundugu araca baglanir
+        vehicles_on = self.enabled.get("vehicles", True)
+        if vehicles_on:
+            self.vehicles.update(frame, now)
         plate_captures: list[dict] = []
         if self.plates is not None and self.enabled["plates"]:
             pboxes, pann, plate_captures = self.plates.process(frame)
+            if vehicles_on:
+                self.vehicles.attach_plates(self.plates.last_reads)
             for xyxy, label, wanted in pboxes:
                 boxes_out.append(_box(xyxy, W, H, label, "#ff4d4d" if wanted else "#c792ea", small=not wanted))
             announcements.extend(pann)
+        vehicle_log: list[dict] = []
+        if vehicles_on:
+            for xyxy, label in self.vehicles.boxes():
+                boxes_out.append(_box(xyxy, W, H, label, "#6FA8DC"))
+            vehicle_log, vsay = self.vehicles.collect(now)
+            announcements.extend(vsay)
 
         visible = sum(1 for tid, _ in persons if self.tracks[tid].ident or self.tracks[tid].counted_by_track)
         return {
@@ -404,6 +420,7 @@ class Detector:
             },
             "faces": new_faces,
             "plate_captures": plate_captures,
+            "vehicle_log": vehicle_log,
             "objects": objects_now,
             "objects_ms": self.objects.ms if self.objects else None,
         }, announcements
@@ -622,6 +639,12 @@ def run(args: argparse.Namespace) -> None:
                                 txt = str(cmd.get("text", ""))[:300]
                                 det.qr_last[txt] = time.time()  # PC ayni QR'i tekrar anons etmesin
                                 itm.on_qr(txt)
+                            elif t == "vehicles_set":  # {"log_all": bool, "speak": bool}
+                                if "log_all" in cmd:
+                                    det.vehicles.log_all = bool(cmd["log_all"])
+                                if "speak" in cmd:
+                                    det.vehicles.speak = bool(cmd["speak"])
+                                send(det.vehicles.history())
                             elif t == "it_history":
                                 send(itm.history())
                             elif t == "hello":
@@ -629,6 +652,7 @@ def run(args: argparse.Namespace) -> None:
                                 send(det.faces_list())
                                 send(itm.state())
                                 send(itm.history())
+                                send(det.vehicles.history())
                     finally:
                         stop.set()
 
@@ -674,6 +698,8 @@ def run(args: argparse.Namespace) -> None:
                     send(result)
                     if result.get("faces"):
                         send(det.faces_list())
+                    if result.get("vehicle_log"):
+                        send(det.vehicles.history())
                     for text in announcements:
                         say(text)
                 if rec.active:  # baglanti koptuysa kaydi duzgun kapat

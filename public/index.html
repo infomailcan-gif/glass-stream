@@ -271,6 +271,13 @@
         <h3>Yakalanan plakalar</h3>
         <div class="captures" id="captures"></div>
       </div>
+      <h3>Araç günlüğü</h3>
+      <div class="checks">
+        <label class="chip"><input type="checkbox" id="vehLogAll"> Tüm araçları kaydet</label>
+        <label class="chip"><input type="checkbox" id="vehSpeak"> Sesli bildir</label>
+      </div>
+      <p class="hint">Görülen araçlar tür, renk ve plakasıyla bu bilgisayara kaydedilir. Aynı plaka 10 dakika içinde tekrar yazılmaz.</p>
+      <div id="vehList"><p class="hint">Henüz araç yok.</p></div>
       <h3>Anonslar</h3>
       <ul class="log" id="log"></ul>
     </section>
@@ -534,6 +541,24 @@ $("itToggle").onclick = () => send({ type: "it_mode", on: !itActive });
 $("itScan").onclick = () => send({ type: "it_scan" });
 $("itPcErr").onclick = () => send({ type: "it_error", pc: true });
 
+// ---------- Arac gunlugu ----------
+function onVehicles(m) {
+  $("vehLogAll").checked = m.log_all; $("vehSpeak").checked = m.speak;
+  const box = $("vehList");
+  if (!m.items.length) { box.innerHTML = `<p class="hint">Henüz araç yok.</p>`; return; }
+  box.innerHTML = "";
+  for (const v of m.items) {
+    const row = document.createElement("div"); row.className = "itrow"; row.style.cursor = "default";
+    const name = [v.color, v.type].filter(Boolean).join(" ");
+    row.innerHTML = `${v.image ? `<a href="${v.image}" target="_blank"><img alt="" src="${v.image}"></a>` : `<div style="width:64px;height:64px;border-radius:8px;background:var(--raised)"></div>`}
+      <div><b>${esc(v.plate || "Plaka okunamadı")}</b>
+      <p>${esc(name.charAt(0).toUpperCase() + name.slice(1))} · ${new Date(v.time * 1000).toLocaleString().slice(0, 16)}</p></div>`;
+    box.append(row);
+  }
+}
+$("vehLogAll").onchange = (e) => send({ type: "vehicles_set", log_all: e.target.checked });
+$("vehSpeak").onchange = (e) => send({ type: "vehicles_set", speak: e.target.checked });
+
 // ---------- Modeller ----------
 function onModels(m) {
   const box = $("models"); box.innerHTML = "";
@@ -612,6 +637,7 @@ function connect() {
         case "it_event": onItEvent(m); break;
         case "it_list": onItList(m); break;
         case "it_qr": onItQr(m); break;
+        case "vehicles": onVehicles(m); break;
         case "ai_state": onAiState(m); break;
         case "recording": onRecording(m); break;
         case "voice": onAnnounce(`Duyulan: “${m.text}”`); break;

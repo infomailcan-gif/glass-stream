@@ -19,3 +19,5 @@ vision/catalog_names.json
 vision/it/
 vision/prompt_*.txt
 vision/inventory.json
+.claude/
+vision/vehicles/

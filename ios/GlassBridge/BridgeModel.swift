@@ -651,6 +651,13 @@ final class BridgeModel {
       Task { await self.sendITScan() }
     case "it_qr":
       itQR = (obj["text"] as? String ?? "", obj["item"] as? [String: Any])
+    case "vehicles":
+      if let items = obj["items"] as? [[String: Any]] {
+        vehicleLog = items.map { v in
+          VehicleEntry(time: v["time"] as? Double ?? 0, type: v["type"] as? String ?? "araç",
+                       color: v["color"] as? String, plate: v["plate"] as? String, image: v["image"] as? String)
+        }
+      }
     case "faces_list":
       if let items = obj["items"] as? [[String: Any]] {
         faces = items.compactMap { f in
@@ -797,6 +804,23 @@ final class BridgeModel {
     let out = UIGraphicsImageRenderer(size: size).image { _ in img.draw(in: CGRect(origin: .zero, size: size)) }
     return out.jpegData(compressionQuality: 0.85)
   }
+
+  // MARK: - Arac gunlugu
+
+  struct VehicleEntry: Identifiable {
+    let time: Double
+    let type: String
+    let color: String?
+    let plate: String?
+    let image: String?
+    var id: String { "\(time)-\(plate ?? type)" }
+    var title: String {
+      let s = [color, type].compactMap { $0 }.joined(separator: " ")
+      return s.prefix(1).uppercased() + s.dropFirst()
+    }
+  }
+
+  var vehicleLog: [VehicleEntry] = []
 
   // MARK: - Bilgi islem
 

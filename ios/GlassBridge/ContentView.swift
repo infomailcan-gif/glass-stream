@@ -498,6 +498,27 @@ struct RecordingsView: View {
         }
       }
 
+      Card(title: "Araç günlüğü") {
+        if model.vehicleLog.isEmpty {
+          Text("Görülen araçlar tür, renk ve plakasıyla burada listelenir.")
+            .font(.subheadline).foregroundStyle(Theme.muted)
+        }
+        ForEach(model.vehicleLog.prefix(30)) { v in
+          HStack(spacing: 12) {
+            AsyncImage(url: v.image.flatMap { model.httpURL($0) }) { $0.resizable().scaledToFill() } placeholder: { Theme.raised }
+              .frame(width: 56, height: 42)
+              .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+              Text(v.plate ?? "Plaka okunamadı").fontWeight(.semibold).foregroundStyle(Theme.text)
+              Text(v.title).font(.footnote).foregroundStyle(Theme.muted)
+            }
+            Spacer()
+            Text(Date(timeIntervalSince1970: v.time).formatted(date: .omitted, time: .shortened))
+              .font(.caption).foregroundStyle(Theme.muted)
+          }
+        }
+      }
+
       Card(title: "Kayıtlar") {
         if model.recordings.isEmpty {
           Text("Henüz kayıt yok.").font(.subheadline).foregroundStyle(Theme.muted)

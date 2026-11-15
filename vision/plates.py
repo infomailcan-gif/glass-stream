@@ -66,6 +66,7 @@ class PlateReader:
         self.cooldown = cooldown
         self.frame_i = 0
         self.last_boxes: list[tuple[tuple[int, int, int, int], str]] = []
+        self.last_reads: list[tuple[tuple[int, int, int, int], str, float]] = []  # bu turdaki ham okumalar
         self.watchlist: list[str] = self._load()
         self.hits: dict[str, list[float]] = {}  # aranan plaka -> son gorulme zamanlari
         self.last_alert: dict[str, float] = {}
@@ -89,11 +90,13 @@ class PlateReader:
         """Dondurur: (kutular[(xyxy, etiket, aranan_mi)], anonslar, yakalananlar)"""
         self.frame_i += 1
         if self.frame_i % self.every:
+            self.last_reads = []
             return [(b, t, False) for b, t in self.last_boxes], [], []
 
         now = time.time()
         boxes, announcements, captures = [], [], []
         self.last_boxes = []
+        self.last_reads = []
         for r in self.alpr.predict(frame):
             bb = r.detection.bounding_box
             xyxy = (int(bb.x1), int(bb.y1), int(bb.x2), int(bb.y2))
@@ -105,6 +108,7 @@ class PlateReader:
             if len(text) < 4 or conf < self.min_conf:
                 continue
 
+            self.last_reads.append((xyxy, text, conf))
             wanted = next((w for w in self.watchlist if matches(text, w)), None)
             label = pretty(text)
             if wanted is None:

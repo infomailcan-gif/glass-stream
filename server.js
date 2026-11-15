@@ -19,7 +19,8 @@ const FACES_DIR = path.join(__dirname, "vision", "faces");
 const REC_DIR = path.join(__dirname, "vision", "recordings");
 // URL oneki -> klasor
 const IT_DIR = path.join(__dirname, "vision", "it");
-const DIRS = { "/captures/": CAPTURES_DIR, "/faces/": FACES_DIR, "/recordings/": REC_DIR, "/it/": IT_DIR };
+const VEH_DIR = path.join(__dirname, "vision", "vehicles");
+const DIRS = { "/captures/": CAPTURES_DIR, "/faces/": FACES_DIR, "/recordings/": REC_DIR, "/it/": IT_DIR, "/vehicles/": VEH_DIR };
 
 const MIME = {
   ".jpg": "image/jpeg",
@@ -151,7 +152,7 @@ visionWss.on("connection", (ws) => {
     // detections: telefondaki "Canli" sekmesi kutulari cizer; models: modeller sekmesi
     if (["announce", "ai_state", "recording", "assistant", "models", "detections",
          "ppe", "objects_cfg", "watchlist", "faces_list",
-         "it_state", "it_event", "it_list", "it_capture_request", "it_qr"].includes(msg.type)) {
+         "it_state", "it_event", "it_list", "it_capture_request", "it_qr", "vehicles"].includes(msg.type)) {
       if (msg.type === "announce") console.log(`[anons] ${msg.text}`);
       for (const phone of ingestWss.clients) if (phone.readyState === 1) phone.send(text);
     }
