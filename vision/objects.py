@@ -74,6 +74,12 @@ TR_EN = {
     "bone": "hairnet",
 }
 
+# Genis katalog sinif adlarinin Turkcesi (bir kez uretilir: make_catalog_tr.py)
+try:
+    CATALOG_TR: dict[str, str] = json.loads((HERE / "catalog_tr.json").read_text(encoding="utf-8"))
+except (OSError, ValueError):
+    CATALOG_TR = {}
+
 DEFAULT_LIST = ["forklift", "yangın tüpü", "merdiven", "palet", "gaz tüpü", "sıvı dökülmesi", "sigara", "telefon"]
 
 
@@ -212,7 +218,7 @@ class ObjectFinder:
             self._frame = frame
         self._event.set()
 
-    def latest(self, max_age: float = 1.0) -> list:
+    def latest(self, max_age: float = 0.5) -> list:
         """[(xyxy, gosterilen_ad, guven)]"""
         with self._lock:
             return list(self._results) if time.time() - self._at < max_age else []
@@ -265,8 +271,8 @@ class ObjectFinder:
                 if r.boxes is not None:
                     for b, c, s in zip(r.boxes.xyxy.cpu().numpy(), r.boxes.cls.int().cpu().tolist(),
                                        r.boxes.conf.cpu().tolist()):
-                        name = self._display[c] if self._display else r.names[c]
-                        if name == "person" or (not self._display and is_scene(name)):
+                        name = self._display[c] if self._display else CATALOG_TR.get(r.names[c], r.names[c])
+                        if r.names[c] == "person" or name == "person" or (not self._display and is_scene(r.names[c])):
                             continue  # kisileri KKD modeli isliyor; sahne siniflari anlamsiz
                         area = (b[2] - b[0]) * (b[3] - b[1]) / (W * H)
                         if area > MAX_AREA:
@@ -275,8 +281,8 @@ class ObjectFinder:
                 with self._lock:
                     self._results, self._at = out, time.time()
                 self.ms = round((time.time() - t) * 1000)
-                # GPU'yu KKD modeline birak: nesne taramasi en fazla ~8/sn
-                time.sleep(max(0.0, 0.125 - (time.time() - t)))
+                # Nesne taramasi en fazla ~16/sn (KKD modeline de GPU kalsin)
+                time.sleep(max(0.0, 0.06 - (time.time() - t)))
             except Exception as e:
                 print(f"[objects] hata: {e!r}")
                 time.sleep(1)

@@ -105,14 +105,28 @@ class Recorder:
         self._thread.start()
         return True, "Kayıt başladı."
 
-    def stop(self) -> tuple[bool, str]:
+    def stop(self, on_saved=None) -> tuple[bool, str]:
+        """Aninda doner; dosya arka planda tamamlanir, bitince on_saved() cagrilir."""
         if not self.active:
             return False, "Kayıt yok."
         self.active = False
-        self._q.put(None)  # bitir
-        if self._thread:
-            self._thread.join(timeout=15)
+        q, th = self._q, self._thread
+        # Bekleyen kareleri atla: durdur komutu geldiyse kuyrugu bosalt, hemen bitir
+        try:
+            while True:
+                q.get_nowait()
+        except queue.Empty:
+            pass
+        q.put(None)
         secs = int(time.time() - self.started)
+
+        def finish() -> None:
+            if th:
+                th.join(timeout=30)
+            if on_saved:
+                on_saved()
+
+        threading.Thread(target=finish, daemon=True).start()
         return True, f"Kayıt durdu. Süre {secs // 60} dakika {secs % 60} saniye."
 
     def status(self) -> dict:

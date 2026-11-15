@@ -50,6 +50,34 @@ final class QualityBox: @unchecked Sendable {
   var value: CGFloat = 0.5
 }
 
+/// Son gonderilen karelerin JPEG'leri (sira no -> veri). PC kutulari hangi kare icin
+/// yolladiysa Canli ekranda o kare gosterilir; boylece kutular goruntuden kaymaz.
+final class FrameBuffer: @unchecked Sendable {
+  private let lock = NSLock()
+  private var frames: [Int: Data] = [:]
+  private var order: [Int] = []
+  var enabled = false  // yalnizca Canli sekmesi acikken doldur
+
+  func put(_ n: Int, _ data: Data) {
+    lock.lock(); defer { lock.unlock() }
+    guard enabled else { return }
+    frames[n] = data
+    order.append(n)
+    if order.count > 90 { frames[order.removeFirst()] = nil }
+  }
+
+  func get(_ n: Int) -> Data? {
+    lock.lock(); defer { lock.unlock() }
+    return frames[n]
+  }
+
+  func clear() {
+    lock.lock(); defer { lock.unlock() }
+    frames.removeAll()
+    order.removeAll()
+  }
+}
+
 /// Gozluk -> telefon -> PC kopru mantigi.
 /// 1) DeviceSession baslat  2) kamera iznini al  3) kamerayi ekle ve akisi baslat
 /// 4) her kareyi JPEG yapip FrameUploader ile PC'ye gonder.
@@ -298,6 +326,7 @@ final class BridgeModel {
       let throttle = self.previewThrottle
       let qbox = self.qualityBox
       qbox.value = jpegQuality.value
+      let fbuf = self.frameBuffer
 
       stream.statePublisher.listen { [weak self] state in
         Task { @MainActor in self?.streamState = state }
@@ -312,7 +341,7 @@ final class BridgeModel {
         guard let image = frame.makeUIImage(),
           let jpeg = image.jpegData(compressionQuality: qbox.value)
         else { return }
-        uploader.send(jpeg)
+        if let n = uploader.send(jpeg) { fbuf.put(n, jpeg) }
         if throttle.allow() {
           Task { @MainActor in self?.preview = image }
         }
@@ -378,7 +407,30 @@ final class BridgeModel {
 
   /// Canli sekmesi acikken onizleme 15 kare/sn, degilse 4 (pil ve islemci icin)
   var liveActive = false {
-    didSet { previewThrottle.setRate(perSecond: liveActive ? 15 : 4) }
+    didSet {
+      previewThrottle.setRate(perSecond: liveActive ? 15 : 4)
+      frameBuffer.enabled = liveActive
+      if !liveActive { frameBuffer.clear(); syncedFrame = nil }
+    }
+  }
+  /// PC'nin analiz ettigi kare (kutularla birebir eslesir)
+  var syncedFrame: UIImage?
+  @ObservationIgnored let frameBuffer = FrameBuffer()
+
+  // Sayilan kisiler (yuz galerisi)
+  struct FaceItem: Identifiable {
+    let id: Int
+    let file: String
+    let time: Double
+  }
+  var faces: [FaceItem] = []
+
+  /// PC'deki bir dosyanin http adresi (ws://host:8000/... -> http://host:8000/<path>)
+  func httpURL(_ path: String) -> URL? {
+    guard var c = URLComponents(string: serverURL.trimmingCharacters(in: .whitespaces)) else { return nil }
+    c.scheme = c.scheme == "wss" ? "https" : "http"
+    c.path = path
+    return c.url
   }
 
   func toggleAI() {
@@ -387,6 +439,7 @@ final class BridgeModel {
 
   func toggleRecord() {
     if recordingActive {
+      recordingActive = false  // dugme aninda tepki versin; PC durumu ayrica dogrular
       uploader.sendJSON(["type": "record", "action": "stop"])
     } else {
       uploader.sendJSON(["type": "record", "action": "start", "mode": recordAnnotated ? "annotated" : "raw"])
@@ -503,6 +556,13 @@ final class BridgeModel {
       objAlerts = obj["alerts"] as? [String] ?? []
     case "watchlist":
       watchlist = obj["plates"] as? [String] ?? []
+    case "faces_list":
+      if let items = obj["items"] as? [[String: Any]] {
+        faces = items.compactMap { f in
+          guard let id = f["id"] as? Int, let file = f["file"] as? String else { return nil }
+          return FaceItem(id: id, file: file, time: f["time"] as? Double ?? 0)
+        }
+      }
     case "models":
       if let items = obj["items"] as? [[String: Any]] {
         models = items.compactMap { m in
@@ -519,6 +579,12 @@ final class BridgeModel {
       analysisLatency = obj["latency_ms"] as? Int
       // Kutulari yalnizca Canli sekmesi acikken coz (gereksiz is yapma)
       guard liveActive, let boxes = obj["boxes"] as? [[String: Any]] else { return }
+      // Analiz edilen kareyi tampondan bul: kutu ve goruntu ayni anin
+      if let n = obj["seq"] as? Int, let data = frameBuffer.get(n), let img = UIImage(data: data) {
+        syncedFrame = img
+      } else if obj["counts"] is NSNull || obj["counts"] == nil {
+        syncedFrame = nil  // analiz kapali: canli onizlemeye don
+      }
       detBoxes = boxes.enumerated().map { i, b in
         DetBox(id: i, x1: b["x1"] as? Double ?? 0, y1: b["y1"] as? Double ?? 0,
                x2: b["x2"] as? Double ?? 0, y2: b["y2"] as? Double ?? 0,

@@ -189,12 +189,13 @@ struct LiveView: View {
     NavigationStack {
       ZStack {
         Theme.ink.ignoresSafeArea()
-        if let img = model.preview {
+        // Analiz aciksa PC'nin isledigi kare (kutularla birebir), degilse canli onizleme
+        if let img = (model.aiOn == true ? model.syncedFrame : nil) ?? model.preview {
           VStack(spacing: 12) {
             Image(uiImage: img)
               .resizable()
               .scaledToFit()
-              .overlay { BoxesOverlay(boxes: model.detBoxes) }
+              .overlay { if model.aiOn == true { BoxesOverlay(boxes: model.detBoxes) } }
               .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
               .overlay(ViewfinderCorners())
               .padding(.horizontal, 16)
@@ -423,7 +424,7 @@ struct RecordingsView: View {
   @State private var playing: BridgeModel.RecFile?
 
   var body: some View {
-    Page(title: "Kayıtlar") {
+    Page(title: "Kayıtlar ve kişiler") {
       Card(title: "Yeni kayıt") {
         Picker("Tür", selection: $model.recordAnnotated) {
           Text("Kutularla").tag(true)
@@ -445,6 +446,27 @@ struct RecordingsView: View {
         .disabled(!model.socketConnected)
         Text("Kayıt bilgisayara yapılır. Kutulu kayıtta tarih, saat ve kişi sayısı da yazılır.")
           .font(.footnote).foregroundStyle(Theme.muted)
+      }
+
+      Card(title: "Sayılan kişiler") {
+        if model.faces.isEmpty {
+          Text("Yüzü görülen kişiler burada listelenir.").font(.subheadline).foregroundStyle(Theme.muted)
+        } else {
+          LazyVGrid(columns: [GridItem(.adaptive(minimum: 76), spacing: 10)], spacing: 10) {
+            ForEach(model.faces) { f in
+              VStack(spacing: 4) {
+                AsyncImage(url: model.httpURL("/faces/" + f.file)) { img in
+                  img.resizable().scaledToFill()
+                } placeholder: {
+                  Theme.raised
+                }
+                .frame(width: 76, height: 76)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                Text("Kişi \(f.id)").font(.caption).foregroundStyle(Theme.muted)
+              }
+            }
+          }
+        }
       }
 
       Card(title: "Kayıtlar") {

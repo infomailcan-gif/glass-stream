@@ -15,3 +15,4 @@ vision/objects.json
 vision/recordings/
 vision/assistant_prompt.txt
 vision/models.json
+vision/catalog_names.json

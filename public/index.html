@@ -348,7 +348,6 @@ function onDetections(m) {
   renderPpeStats(c.ppe || []);
   const objs = Object.entries(m.objects || {});
   $("objNow").textContent = objs.length ? objs.map(([k, v]) => (v > 1 ? `${k} (${v})` : k)).join(", ") : "Nesne yok.";
-  if (m.faces?.length) onFaces(m.faces);
   if (m.plate_captures?.length) onCaptures(m.plate_captures);
   drawOverlay();
 }
@@ -524,6 +523,7 @@ function connect() {
         case "ppe": onPpeConfig(m); break;
         case "objects_cfg": onObjCfg(m); break;
         case "models": onModels(m); break;
+        case "faces_list": onFaces(m.items.slice().reverse()); break;
         case "ai_state": onAiState(m); break;
         case "recording": onRecording(m); break;
         case "voice": onAnnounce(`Duyulan: “${m.text}”`); break;

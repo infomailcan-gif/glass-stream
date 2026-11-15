@@ -43,16 +43,24 @@ final class FrameUploader: NSObject, URLSessionWebSocketDelegate, @unchecked Sen
     onConnectionChange?(false)
   }
 
-  /// Bir JPEG kare gonder. Onceki kare hala yoldaysa bu kare atlanir.
-  func send(_ jpeg: Data) {
+  private var seq = 0
+
+  /// Bir JPEG kare gonder. Yolda cok kare varsa atlanir (nil doner).
+  /// Her kareden once {"type":"seq","n":N} gider; PC kutulari bu numarayla geri yollar,
+  /// telefon ayni kareyi kutularla gosterir (kutular kaymaz).
+  @discardableResult
+  func send(_ jpeg: Data) -> Int? {
     lock.lock()
     guard let t = task, inFlight < maxInFlight else {
       lock.unlock()
-      return
+      return nil
     }
     inFlight += 1
+    seq += 1
+    let n = seq
     lock.unlock()
 
+    t.send(.string("{\"type\":\"seq\",\"n\":\(n)}")) { _ in }
     t.send(.data(jpeg)) { [weak self] error in
       guard let self else { return }
       self.lock.lock()
@@ -61,6 +69,7 @@ final class FrameUploader: NSObject, URLSessionWebSocketDelegate, @unchecked Sen
       self.lock.unlock()
       if error != nil { self.handleDrop(of: t) }
     }
+    return n
   }
 
   /// Son cagridan beri gonderilen kare sayisi (FPS gostergesi icin).

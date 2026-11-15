@@ -93,6 +93,11 @@ ingestWss.on("connection", (ws, req) => {
     if (!isBinary) {
       // Telefondan komut (sesli komut: yapay zeka ac/kapat, kayit, Claude sorusu...) -> analiz servisine
       const text = data.toString();
+      // Kare sira numarasi: yalnizca analiz servisine (her kareden once gelir, kayda yazma)
+      if (text.startsWith('{"type":"seq"')) {
+        for (const v of visionWss.clients) if (v.readyState === 1) v.send(text);
+        return;
+      }
       console.log(`[telefon] ${text.slice(0, 200)}`);
       for (const v of visionWss.clients) if (v.readyState === 1) v.send(text);
       for (const v of viewWss.clients) if (v.readyState === 1) v.send(text); // web'de de goster
@@ -144,7 +149,7 @@ visionWss.on("connection", (ws) => {
     // Telefona gidenler: anonslar + durum bilgisi (yapay zeka acik mi, kayit suruyor mu)
     // detections: telefondaki "Canli" sekmesi kutulari cizer; models: modeller sekmesi
     if (["announce", "ai_state", "recording", "assistant", "models", "detections",
-         "ppe", "objects_cfg", "watchlist"].includes(msg.type)) {
+         "ppe", "objects_cfg", "watchlist", "faces_list"].includes(msg.type)) {
       if (msg.type === "announce") console.log(`[anons] ${msg.text}`);
       for (const phone of ingestWss.clients) if (phone.readyState === 1) phone.send(text);
     }

@@ -190,6 +190,12 @@ class Detector:
         if self.objects is not None:
             self.objects.enabled = self.enabled["objects"]
 
+    def faces_list(self) -> dict:
+        """Sayilan kisilerin yuz kayitlari (web/mobil galerisi icin)."""
+        items = [{"id": i.id, "file": i.face_file, "time": i.last_seen or i.first_seen}
+                 for i in self.faces.fid.identities if i.face_file]
+        return {"type": "faces_list", "items": items[::-1]}
+
     def models_config(self) -> dict:
         return {"type": "models", "items": [
             {"key": k, "name": n, "desc": d, "on": self.enabled[k]} for k, (n, d, _) in MODEL_INFO.items()
@@ -474,7 +480,7 @@ def run(args: argparse.Namespace) -> None:
 
     det = Detector(args)
     rec = Recorder()
-    state = {"ai": args.ai_on, "frame": None}  # yapay zeka katmani acik mi; son kare (asistan icin)
+    state = {"ai": args.ai_on, "frame": None, "seq": None}  # yapay zeka katmani acik mi; son kare (asistan icin)
     sender = {"fn": None}  # aktif baglantinin send fonksiyonu (asistan thread'i kullanir)
     assistant = Assistant(lambda obj: sender["fn"] and sender["fn"](obj), model=args.claude_model)
     url = args.server
@@ -519,7 +525,13 @@ def run(args: argparse.Namespace) -> None:
                     try:
                         for msg in ws:
                             if isinstance(msg, bytes):
-                                latest.put(msg)
+                                latest.put((msg, state.get("seq")))  # kare + telefonun sira numarasi
+                                continue
+                            if msg.startswith('{"type":"seq"'):  # her kareden once gelir (hizli yol)
+                                try:
+                                    state["seq"] = json.loads(msg).get("n")
+                                except ValueError:
+                                    pass
                                 continue
                             try:
                                 cmd = json.loads(msg)
@@ -552,7 +564,7 @@ def run(args: argparse.Namespace) -> None:
                                 if cmd.get("action") == "start":
                                     ok, msg = rec.start(cmd.get("mode", "annotated"))
                                 else:
-                                    ok, msg = rec.stop()
+                                    ok, msg = rec.stop(on_saved=send_state)  # aninda; dosya arka planda biter
                                 say(msg)
                                 send_state()
                             elif t == "models_set":  # {"type":"models_set","enabled":{"faces":false,...}}
@@ -569,6 +581,7 @@ def run(args: argparse.Namespace) -> None:
                                 assistant.cancel()
                             elif t == "hello":
                                 send_config()
+                                send(det.faces_list())
                     finally:
                         stop.set()
 
@@ -576,9 +589,10 @@ def run(args: argparse.Namespace) -> None:
 
                 n, t0 = 0, time.time()
                 while not stop.is_set():
-                    data = latest.take(timeout=1.0)
-                    if data is None:
+                    item = latest.take(timeout=1.0)
+                    if item is None:
                         continue
+                    data, seq = item
                     frame = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
                     if frame is None:
                         continue
@@ -589,6 +603,7 @@ def run(args: argparse.Namespace) -> None:
                     else:  # katman kapali: analiz yok, sadece (varsa) kayit
                         result, announcements = {"type": "detections", "boxes": [], "counts": None, "ai_off": True}, []
                     result["latency_ms"] = round((time.time() - t) * 1000)
+                    result["seq"] = seq  # telefon bu kareyi kutularla birlikte gosterir (kayma olmaz)
                     n += 1
                     if time.time() - t0 >= 1:
                         result["fps"] = round(n / (time.time() - t0), 1)
@@ -602,6 +617,8 @@ def run(args: argparse.Namespace) -> None:
                             f"  {p['name']} eksik: {p['missing']}" for p in c.get("ppe", []))
                     rec.feed(frame, result["boxes"], footer)
                     send(result)
+                    if result.get("faces"):
+                        send(det.faces_list())
                     for text in announcements:
                         say(text)
                 if rec.active:  # baglanti koptuysa kaydi duzgun kapat
