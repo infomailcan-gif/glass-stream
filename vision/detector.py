@@ -769,6 +769,27 @@ def run(args: argparse.Namespace) -> None:
                                     say("Claude asistanı kapalı. Modeller bölümünden açabilirsin.")
                             elif t == "ask_cancel":
                                 assistant.cancel()
+                            elif t == "wipe":  # gecmisi sil: {"what": "people"|...|"all"}
+                                from wipe import NAMES, wipe
+
+                                what = cmd.get("what", "")
+                                if what in NAMES:
+                                    if what in ("people", "sessions", "all") and sessions.active:
+                                        sessions.current = None  # suren sayim da iptal
+                                        det.counting = False
+                                    if what in ("people", "all"):
+                                        det.reset()
+                                    skip = {HERE / "recordings" / rec.file} if rec.active and rec.file else set()
+                                    n = wipe(what, skip)
+                                    print(f"[vision] silindi: {NAMES[what]} ({n} dosya)")
+                                    say(f"{NAMES[what].capitalize()} silindi.")
+                                    send(det.faces_list())
+                                    send(det.vehicles.history())
+                                    send(itm.history())
+                                    send(itm.qr_history())
+                                    send(sessions.history())
+                                    send(sessions.state())
+                                    send(rec.status())
                             elif t == "it_mode":  # {"type":"it_mode","on":true}
                                 on = bool(cmd.get("on"))
                                 itm.set_active(on)

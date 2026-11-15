@@ -32,6 +32,7 @@ class ClaudeRunner:
         self._events: queue.Queue = queue.Queue()
         self._turns = 0
         self._lock = threading.Lock()  # ayni anda tek soru
+        self._cancelled = False
 
     # ------------------------------------------------------------------
     def warm(self) -> None:
@@ -75,6 +76,8 @@ class ClaudeRunner:
                 pass
 
     def cancel(self) -> None:
+        """Suren cevabi kes (surec oldurulur; soru yeniden SORULMAZ)."""
+        self._cancelled = True
         self._stop()
 
     # ------------------------------------------------------------------
@@ -83,6 +86,7 @@ class ClaudeRunner:
         if not self.exe:
             return "", "Claude Code bulunamadı."
         with self._lock:
+            self._cancelled = False
             for attempt in (1, 2):
                 self._ensure()
                 p, q = self._proc, self._events
@@ -103,7 +107,7 @@ class ClaudeRunner:
                         return full, "Claude zaman aşımına uğradı."
                     et = ev.get("type")
                     if et == "_eof":
-                        if full:
+                        if full or self._cancelled:
                             return full, None
                         break  # surec oldu: yeniden dene
                     if et == "stream_event":

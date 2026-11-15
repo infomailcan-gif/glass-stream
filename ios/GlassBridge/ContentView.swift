@@ -25,6 +25,17 @@ struct ContentView: View {
       .tint(Theme.amber)
       .onChange(of: tab) { _, t in model.liveActive = (t == 1) }
 
+      // Ses cubugu: hangi sekmede olursan ol duyulani, durumu ve Durdur dugmesini gosterir
+      if model.voiceEnabled || model.isSpeaking || model.assistantBusy {
+        VStack {
+          Spacer()
+          VoiceBar(model: model)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 58)
+        }
+        .zIndex(0.5)
+      }
+
       if !splashDone {
         SplashView { withAnimation(.easeOut(duration: 0.35)) { splashDone = true } }
           .transition(.opacity)
@@ -476,6 +487,24 @@ struct RecordingsView: View {
   @State private var playing: BridgeModel.RecFile?
   @State private var openSession: BridgeModel.CountSession?
   @State private var detail: MediaItem?
+  @State private var pendingWipe: String?
+
+  private var wipeTitle: String {
+    ["sessions": "Tüm sayım oturumları silinsin mi?", "people": "Sayılan kişilerin fotoğrafları silinsin mi?",
+     "vehicles": "Araç ve plaka kayıtları silinsin mi?", "videos": "Tüm videolar silinsin mi?",
+     "it": "BT ve EKG kayıtları silinsin mi?", "qr": "QR kayıtları silinsin mi?"][pendingWipe ?? ""] ?? "Silinsin mi?"
+  }
+
+  private func clearButton(_ what: String, _ title: String) -> some View {
+    Button(role: .destructive) { pendingWipe = what } label: {
+      Label(title, systemImage: "trash")
+        .font(.subheadline.weight(.semibold))
+        .frame(maxWidth: .infinity).padding(.vertical, 10)
+        .foregroundStyle(Theme.bad)
+        .background(Theme.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+    .buttonStyle(.plain)
+  }
 
   var body: some View {
     Page(title: "Kayıtlar") {
@@ -483,6 +512,7 @@ struct RecordingsView: View {
         Text("Sayım").tag("counts")
         Text("Kişi").tag("people")
         Text("Araç").tag("cars")
+        Text("Plaka").tag("plates")
         Text("Foto").tag("photos")
         Text("Video").tag("videos")
       }
@@ -491,10 +521,21 @@ struct RecordingsView: View {
       switch section {
       case "people": peopleSection
       case "cars": carsSection
+      case "plates": platesSection
       case "photos": photosSection
       case "videos": videosSection
       default: countsSection
       }
+    }
+    .confirmationDialog(wipeTitle, isPresented: Binding(get: { pendingWipe != nil }, set: { if !$0 { pendingWipe = nil } }),
+                        titleVisibility: .visible) {
+      Button("Sil", role: .destructive) {
+        if let w = pendingWipe { model.wipe(w) }
+        pendingWipe = nil
+      }
+      Button("Vazgeç", role: .cancel) { pendingWipe = nil }
+    } message: {
+      Text("Bilgisayardaki fotoğraflar ve kayıtlar kalıcı olarak silinir, geri alınamaz.")
     }
     .sheet(item: $openSession) { s in sessionSheet(s) }
     .sheet(item: $detail) { d in MediaDetailView(item: d, url: model.httpURL(d.path)) }
@@ -565,6 +606,7 @@ struct RecordingsView: View {
         if s.id != model.countSessions.last?.id { Divider().overlay(Theme.line) }
       }
     }
+    if !model.countSessions.isEmpty { clearButton("sessions", "Sayım geçmişini sil") }
   }
 
   private func sessionSheet(_ s: BridgeModel.CountSession) -> some View {
@@ -621,14 +663,15 @@ struct RecordingsView: View {
         }
       }
     }
+    if !model.faces.isEmpty { clearButton("people", "Kişi fotoğraflarını sil") }
   }
 
   // MARK: Araclar ve plakalar
 
   @ViewBuilder private var carsSection: some View {
-    Card(title: "Plakalar ve araçlar") {
+    Card(title: "Görülen araçlar") {
       if model.vehicleLog.isEmpty {
-        Text("Okunan her plaka ve görülen araç; türü, rengi, saati, yeri ve fotoğrafıyla burada.")
+        Text("Birkaç saniye bakılan her araç; türü, rengi, saati, yeri ve fotoğrafıyla burada.")
           .font(.subheadline).foregroundStyle(Theme.muted)
       }
       ForEach(model.vehicleLog.prefix(60)) { v in
@@ -654,6 +697,40 @@ struct RecordingsView: View {
         .buttonStyle(.plain)
       }
     }
+    if !model.vehicleLog.isEmpty || !model.plateLog.isEmpty { clearButton("vehicles", "Araç ve plaka kayıtlarını sil") }
+  }
+
+  // MARK: Plakalar
+
+  @ViewBuilder private var platesSection: some View {
+    Card(title: "Okunan plakalar") {
+      if model.plateLog.isEmpty {
+        Text("Okunan her plaka; saati, yeri, varsa araç türü ve fotoğrafıyla burada. Aynı plaka 10 dakikada bir yazılır.")
+          .font(.subheadline).foregroundStyle(Theme.muted)
+      }
+      ForEach(model.plateLog.prefix(80)) { v in
+        Button {
+          detail = MediaItem(path: v.image ?? "", title: v.plate ?? "Plaka",
+                             lines: [v.type.isEmpty ? nil : v.title, Self.when(v.time), v.place])
+        } label: {
+          HStack(spacing: 12) {
+            AsyncImage(url: v.image.flatMap { model.httpURL($0) }) { $0.resizable().scaledToFill() } placeholder: { Theme.raised }
+              .frame(width: 72, height: 48)
+              .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+              Text(v.plate ?? "Plaka").font(.headline.monospaced()).foregroundStyle(Theme.text)
+              if !v.type.isEmpty { Text(v.title).font(.footnote).foregroundStyle(Theme.muted) }
+              if let p = v.place { Label(p, systemImage: "mappin").font(.caption).foregroundStyle(Theme.muted).lineLimit(1) }
+            }
+            Spacer()
+            Text(Date(timeIntervalSince1970: v.time).formatted(date: .abbreviated, time: .shortened))
+              .font(.caption).foregroundStyle(Theme.muted)
+          }
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+      }
+    }
   }
 
   // MARK: Tum fotograflar
@@ -667,6 +744,11 @@ struct RecordingsView: View {
     items += model.vehicleLog.compactMap { v in
       v.image.map {
         MediaItem(path: $0, title: v.plate ?? v.title, lines: [v.title, Self.when(v.time), v.place], time: v.time, kind: "Araç")
+      }
+    }
+    items += model.plateLog.compactMap { v in
+      v.image.map {
+        MediaItem(path: $0, title: v.plate ?? "Plaka", lines: [Self.when(v.time), v.place], time: v.time, kind: "Plaka")
       }
     }
     items += model.itHistory.map { r in
@@ -745,6 +827,7 @@ struct RecordingsView: View {
         if f.id != model.recordings.last?.id { Divider().overlay(Theme.line) }
       }
     }
+    if !model.recordings.isEmpty { clearButton("videos", "Videoları sil") }
   }
 
   static func when(_ t: Double) -> String {
@@ -876,6 +959,7 @@ struct SaveVideoButton: View {
 
 struct SettingsView: View {
   @Bindable var model: BridgeModel
+  @State private var confirmWipeAll = false
 
   var body: some View {
     NavigationStack {
@@ -974,6 +1058,20 @@ struct SettingsView: View {
         } header: { Text("Güncellemeler") }
 
         Section {
+          Button("Tüm verileri sil", role: .destructive) { confirmWipeAll = true }
+        } header: {
+          Text("Veriler")
+        } footer: {
+          Text("Kişi fotoğrafları, araç ve plaka kayıtları, BT, EKG ve QR kayıtları, sayımlar ve videolar bilgisayardan silinir. Ayarlar, aranan plakalar ve envanter kalır.")
+        }
+        .confirmationDialog("Tüm veriler silinsin mi?", isPresented: $confirmWipeAll, titleVisibility: .visible) {
+          Button("Hepsini sil", role: .destructive) { model.wipe("all") }
+          Button("Vazgeç", role: .cancel) {}
+        } message: {
+          Text("Bu işlem geri alınamaz. Süren sayım da iptal edilir.")
+        }
+
+        Section {
           LabeledContent("Oturum", value: String(describing: model.sessionState))
           LabeledContent("Akış", value: String(describing: model.streamState))
         } header: { Text("Tanılama") }
@@ -982,5 +1080,45 @@ struct SettingsView: View {
       .background(Theme.ink)
       .navigationTitle("Ayarlar")
     }
+  }
+}
+
+
+/// Her sekmenin altinda: dinleme durumu, son duyulan cumle, Claude'un durumu ve Durdur dugmesi
+struct VoiceBar: View {
+  @Bindable var model: BridgeModel
+
+  private var status: String {
+    if model.isSpeaking { return "Konuşuyor… araya girmek için “dur” de" }
+    if model.assistantBusy { return "Claude düşünüyor…" }
+    if let h = model.voiceHint { return h }
+    if let heard = model.lastHeard, !heard.isEmpty { return "“\(heard)”" }
+    return model.voiceListening ? "Dinliyorum" : "Ses kapalı"
+  }
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Image(systemName: model.isSpeaking ? "speaker.wave.2.fill" : model.voiceListening ? "mic.fill" : "mic.slash")
+        .foregroundStyle(model.isSpeaking || model.assistantBusy ? Theme.amber : Theme.muted)
+        .frame(width: 22)
+      Text(status)
+        .font(.footnote)
+        .foregroundStyle(model.voiceHint != nil && !model.isSpeaking ? Theme.amber : Theme.text)
+        .lineLimit(2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      if model.isSpeaking || model.assistantBusy {
+        Button { model.stopTalking() } label: {
+          Label("Durdur", systemImage: "stop.fill")
+            .font(.footnote.weight(.bold))
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .foregroundStyle(Theme.ink)
+            .background(Theme.amber, in: Capsule())
+        }
+        .buttonStyle(.plain)
+      }
+    }
+    .padding(.horizontal, 12).padding(.vertical, 9)
+    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Theme.line))
   }
 }

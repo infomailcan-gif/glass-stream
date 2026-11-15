@@ -192,9 +192,13 @@ final class BridgeModel {
 
     // Sesli komutlar: TTS konusurken dinleme duraklar (kendi sesini komut sanmasin)
     speaker.onSpeakingChange = { [weak self] speaking in
-      self?.voice.setPaused(speaking)
+      self?.isSpeaking = speaking
+      self?.voice.setPaused(speaking)  // konusurken yalnizca "dur / sus / yeter" dinlenir
     }
-    voice.onHeard = { [weak self] text in self?.lastHeard = text }
+    voice.onHeard = { [weak self] text in self?.lastHeard = text; self?.voiceHint = nil }
+    voice.onUnmatched = { [weak self] _ in
+      self?.voiceHint = "Komut anlaşılmadı. Claude'a sormak için “Claude” ya da “Asistan” diye başla."
+    }
     voice.onStateChange = { [weak self] on in self?.voiceListening = on }
     voice.onCommand = { [weak self] cmd, raw in self?.handleVoice(cmd, raw: raw) }
 
@@ -663,6 +667,13 @@ final class BridgeModel {
                        place: v["place"] as? String)
         }
       }
+      if let items = obj["plates"] as? [[String: Any]] {
+        plateLog = items.map { v in
+          VehicleEntry(time: v["time"] as? Double ?? 0, type: v["type"] as? String ?? "",
+                       color: v["color"] as? String, plate: v["plate"] as? String, image: v["image"] as? String,
+                       place: v["place"] as? String)
+        }
+      }
     case "count_state":
       countActive = obj["active"] as? Bool ?? false
       countSince = obj["start"] as? Double
@@ -719,9 +730,11 @@ final class BridgeModel {
     case "assistant":
       // Claude: {"event":"question"|"delta"|"done", "text":...} ve okunacak {"say":...}
       let event = obj["event"] as? String
-      if event == "question" { lastQuestion = obj["text"] as? String; assistantText = nil }
+      if event == "question" { lastQuestion = obj["text"] as? String; assistantText = nil; assistantBusy = true }
       if event == "delta" || event == "done", let t = obj["text"] as? String { assistantText = t }
-      if let say = obj["say"] as? String, !say.isEmpty { announce(say) }
+      // Durdurulduysa yoldaki cumleleri okuma
+      if let say = obj["say"] as? String, !say.isEmpty, !stoppedByUser { announce(say) }
+      if event == "done" || event == "cancel" || event == "error" { assistantBusy = false; stoppedByUser = false }
       if event == "done" { voice.allowFollowUp(seconds: 12) }
     default:
       break
@@ -733,6 +746,25 @@ final class BridgeModel {
   var voiceEnabled = false
   var voiceListening = false
   var lastHeard: String?
+  var voiceHint: String?
+  var isSpeaking = false
+  var assistantBusy = false
+  @ObservationIgnored private var stoppedByUser = false
+
+  /// AI konusurken araya gir: sesi hemen kes, Claude'un cevabini durdur
+  func stopTalking() {
+    speaker.stop()
+    if assistantBusy {
+      stoppedByUser = true
+      uploader.sendJSON(["type": "ask_cancel"])
+    }
+    assistantBusy = false
+  }
+
+  /// Kayitlari sil: "people" | "vehicles" | "it" | "qr" | "sessions" | "videos" | "all"
+  func wipe(_ what: String) {
+    uploader.sendJSON(["type": "wipe", "what": what])
+  }
   @ObservationIgnored private let voice = VoiceCommands()
 
   func setVoice(_ on: Bool) {
@@ -777,13 +809,15 @@ final class BridgeModel {
       startCount(ppe: ppe)
     case .countStop:
       stopCount()
+    case .stopTalking:
+      stopTalking()
     case .ask(let question):
       let stop = ["sus", "dur", "yeter", "kes"].contains(VoiceCommands.normalize(question))
       if stop {
-        speaker.stop()  // okunmakta olan cevabi hemen kes
-        uploader.sendJSON(["type": "ask_cancel"])
+        stopTalking()  // okunmakta olan cevabi hemen kes
         return
       }
+      assistantBusy = true
       speaker.say("Bakıyorum.")
       Task { await self.ask(question) }
     }
@@ -941,6 +975,7 @@ final class BridgeModel {
   }
 
   var vehicleLog: [VehicleEntry] = []
+  var plateLog: [VehicleEntry] = []
 
   // MARK: - Bilgi islem
 

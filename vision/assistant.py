@@ -97,8 +97,16 @@ class Assistant:
         self.busy = False
         self._lock = threading.Lock()
         self._proc: subprocess.Popen | None = None
+        self._cancelled = False
         PROMPT_FILE.write_text(SYSTEM_PROMPT, encoding="utf-8")
         print(f"[asistan] claude: {self.exe or 'BULUNAMADI'} (model: {model})")
+        # Surekli acik oturum: her soruda claude.exe'yi yeniden baslatmak birkac saniye kaybettiriyordu.
+        # Sohbet baglami surecte kalir; 12 sorudan sonra (ya da "yeni konu") temiz oturum acilir.
+        from claude_runner import ClaudeRunner
+
+        self.runner = ClaudeRunner("asistan", model, SYSTEM_PROMPT, max_turns=12)
+        if self.exe:
+            self.runner.warm()
 
     # ------------------------------------------------------------------
     def ask(self, question: str, photo_b64: str | None, latest_frame: np.ndarray | None) -> None:
@@ -106,6 +114,8 @@ class Assistant:
         low = q.lower()
         if any(w in low for w in ("yeni konu", "yeni sohbet", "sohbeti sıfırla", "sohbeti sifirla")):
             self.session_id = None
+            self.runner.cancel()
+            self.runner.warm()
             self._say("Tamam, yeni bir konuya başladık.")
             self.send({"type": "assistant", "event": "reset"})
             return
@@ -120,6 +130,7 @@ class Assistant:
                 self._say("Önceki soruyu yanıtlıyorum, biraz bekle.")
                 return
             self.busy = True
+            self._cancelled = False
 
         # Gorsel secimi
         source, img = "yok", None
@@ -135,85 +146,59 @@ class Assistant:
         threading.Thread(target=self._run, args=(q, img), daemon=True).start()
 
     def cancel(self) -> None:
-        p = self._proc
-        if p and p.poll() is None:
-            p.kill()
+        """Konusmayi kes: Claude cevabi yarida birakilir, kalan cumleler okunmaz."""
+        self._cancelled = True
+        self.runner.cancel()
+        self.runner.warm()  # sonraki soru beklemesin
         self.send({"type": "assistant", "event": "cancel"})
 
     # ------------------------------------------------------------------
     def _run(self, question: str, img: bytes | None) -> None:
         t0 = time.time()
-        full, spoken_upto, first = "", 0, None
+        st = {"spoken": 0, "in_code": False, "first": None}
+        full = ""
+
+        def on_delta(text: str) -> None:
+            if self._cancelled:
+                return
+            if st["first"] is None:
+                st["first"] = time.time() - t0
+            # Tamamlanan cumleleri hemen oku (kod blogu icindekiler haric)
+            pending = text[st["spoken"]:]
+            while True:
+                m = SENT_END.match(pending)
+                if not m:
+                    break
+                chunk = m.group(1)
+                st["in_code"] ^= chunk.count("```") % 2 == 1
+                st["spoken"] += m.end()
+                pending = text[st["spoken"]:]
+                say = to_speech(chunk)
+                if say and not st["in_code"]:
+                    self._say(say)
+            self.send({"type": "assistant", "event": "delta", "text": text})
+
         try:
             content = []
             if img:
                 content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
                                                             "data": base64.b64encode(img).decode()}})
             content.append({"type": "text", "text": question})
-            msg = {"type": "user", "message": {"role": "user", "content": content}}
-
-            cmd = [self.exe, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
-                   "--verbose", "--include-partial-messages", "--model", self.model,
-                   "--system-prompt-file", str(PROMPT_FILE), "--tools", ""]
-            if self.session_id:
-                cmd += ["--resume", self.session_id]
-            self._proc = p = subprocess.Popen(
-                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                cwd=str(HERE), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            p.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
-            p.stdin.close()
-
-            in_code = False
-            for raw in p.stdout:
-                try:
-                    ev = json.loads(raw)
-                except ValueError:
-                    continue
-                et = ev.get("type")
-                if et == "system" and ev.get("session_id"):
-                    self.session_id = ev["session_id"]
-                elif et == "stream_event":
-                    e = ev.get("event", {})
-                    if e.get("type") == "content_block_delta" and e.get("delta", {}).get("type") == "text_delta":
-                        full += e["delta"]["text"]
-                        if first is None:
-                            first = time.time() - t0
-                        # Tamamlanan cumleleri hemen oku (kod blogu icindekiler haric)
-                        pending = full[spoken_upto:]
-                        while True:
-                            m = SENT_END.match(pending)
-                            if not m:
-                                break
-                            chunk = m.group(1)
-                            in_code ^= chunk.count("```") % 2 == 1
-                            spoken_upto += m.end()
-                            pending = full[spoken_upto:]
-                            say = to_speech(chunk)
-                            if say and not in_code:
-                                self._say(say)
-                        self.send({"type": "assistant", "event": "delta", "text": full})
-                elif et == "result":
-                    if ev.get("session_id"):
-                        self.session_id = ev["session_id"]
-                    if ev.get("is_error"):
-                        err = str(ev.get("result") or ev.get("subtype"))
-                        self._error(err)
-            p.wait(timeout=10)
-            rest = to_speech(full[spoken_upto:])
-            if rest and not in_code:
-                self._say(rest)
-            if p.returncode not in (0, None) and not full:
-                err = (p.stderr.read() or b"").decode("utf-8", "replace").strip()
-                self._error(err or f"çıkış kodu {p.returncode}")
+            full, err = self.runner.ask(content, on_delta, timeout=120)
+            if not self._cancelled:
+                if err:
+                    self._error(err)
+                rest = to_speech(full[st["spoken"]:])
+                if rest and not st["in_code"]:
+                    self._say(rest)
         except Exception as e:
             self._error(repr(e))
         finally:
-            self.send({"type": "assistant", "event": "done", "text": full,
+            first = st["first"]
+            self.send({"type": "assistant", "event": "cancel" if self._cancelled else "done", "text": full,
                        "first_s": round(first, 1) if first else None, "total_s": round(time.time() - t0, 1)})
             with self._lock:
                 self.busy = False
-            self._proc = None
 
     def _say(self, text: str) -> None:
         self.send({"type": "assistant", "say": text})

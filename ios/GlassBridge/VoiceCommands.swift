@@ -15,7 +15,7 @@ import Speech
 ///   "bilgisayarimdaki hata ne"                      -> .itError(pc: true)   bu PC'nin ekrani
 enum VoiceCommand: Equatable {
   case aiOn, aiOff, recordStart, recordStop
-  case itOn, itOff, itScan, ecg, countStop
+  case itOn, itOff, itScan, ecg, countStop, stopTalking
   case countStart(ppe: [String])
   case itError(pc: Bool, text: String)
   case ask(String)
@@ -26,6 +26,8 @@ final class VoiceCommands: NSObject {
   var onCommand: ((VoiceCommand, String) -> Void)?
   var onHeard: ((String) -> Void)?
   var onStateChange: ((Bool) -> Void)?
+  /// Cumle bitti ama hicbir komuta / Claude sorusuna uymadi (ekranda ipucu gostermek icin)
+  var onUnmatched: ((String) -> Void)?
 
   private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "tr-TR"))
   private let engine = AVAudioEngine()
@@ -34,7 +36,8 @@ final class VoiceCommands: NSObject {
   private var restartTimer: Timer?
   private var silenceTimer: Timer?
   private(set) var isListening = false
-  private var paused = false  // TTS konusurken kendi sesimizi duymayalim
+  private var paused = false  // TTS konusurken: yalnizca "dur / sus / yeter" dinlenir
+  private var heardWords = 0  // bu oturumda duyulan kelime sayisi (yeni eklenen kelimeyi bulmak icin)
   private var askBuffer: String?
   private var generation = 0
 
@@ -67,12 +70,13 @@ final class VoiceCommands: NSObject {
   func setPaused(_ p: Bool) {
     guard isListening, p != paused else { return }
     paused = p
-    if p { endTask() } else { beginTask() }
+    beginTask()  // metni sifirla; konusma sirasinda da dinle (araya girebilmek icin)
   }
 
   private func beginTask() {
     endTask()
-    guard isListening, !paused, let recognizer else { return }
+    heardWords = 0
+    guard isListening, let recognizer else { return }
     AudioSessionManager.shared.activate()
 
     let req = SFSpeechAudioBufferRecognitionRequest()
@@ -126,7 +130,7 @@ final class VoiceCommands: NSObject {
   }
 
   private func scheduleRestart(after s: Double) {
-    guard isListening, !paused else { return }
+    guard isListening else { return }
     let gen = generation
     Timer.scheduledTimer(withTimeInterval: s, repeats: false) { [weak self] _ in
       Task { @MainActor in
@@ -148,9 +152,22 @@ final class VoiceCommands: NSObject {
   }
 
   private func handle(_ raw: String, isFinal: Bool) {
-    onHeard?(raw)
     let t = Self.normalize(raw)
+    let tokensAll = t.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
     let words = t.split(whereSeparator: { $0 == " " }).count
+
+    // AI konusurken: mikrofon gozluk hoparlorunun sesini de duyar. Yalnizca YENI eklenen
+    // kelimelerde "dur / sus / yeter / kes / tamam" varsa konusmayi kes; gerisini yok say.
+    if paused {
+      let fresh = tokensAll.count > heardWords ? Array(tokensAll[heardWords...]) : []
+      heardWords = max(heardWords, tokensAll.count)
+      let stops: Set<String> = ["dur", "durdur", "sus", "yeter", "kes", "tamam", "stop", "sustur"]
+      if fresh.contains(where: { stops.contains($0) }) {
+        fire(.stopTalking, raw)
+      }
+      return
+    }
+    onHeard?(raw)
 
     // 0a) Kisi sayimi: "kisi saymayi baslat (maskeli kisileri de say)" / "kisi saymayi bitir"
     if words <= 12 {
@@ -247,12 +264,15 @@ final class VoiceCommands: NSObject {
     } else if conversationMode {
       question = raw
     }
-    guard let q = question?.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)) else { return }
+    guard let q = question?.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)) else {
+      if isFinal && words >= 2 { onUnmatched?(raw) }
+      return
+    }
 
     askBuffer = q
     silenceTimer?.invalidate()
     // Kullanici susunca gonder (sohbet modunda biraz daha uzun bekle; cumle ortasinda kesilmesin)
-    let wait = isFinal ? 0.1 : (conversationMode ? 1.5 : 1.3)
+    let wait = isFinal ? 0.1 : (conversationMode ? 1.2 : 1.0)
     silenceTimer = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
       Task { @MainActor in self?.flushAsk(raw) }
     }
@@ -282,7 +302,7 @@ final class VoiceCommands: NSObject {
 
   /// "claude", "klod", "klot", "clod" gibi duyulma bicimleri
   static func claudeRange(in t: String) -> Range<String.Index>? {
-    for key in ["claude", "klod", "klot", "clod", "kload", "cloud", "asistan"] {
+    for key in ["claude", "klod", "klot", "clod", "kload", "cloud", "asistan", "yapay zeka"] {
       if let r = t.range(of: key) { return r }
     }
     return nil

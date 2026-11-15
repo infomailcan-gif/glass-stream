@@ -109,6 +109,7 @@ class VehicleTracker:
         self.plate_hits: dict[str, list[float]] = {}
         self.log_all = True  # tum plakalari gunluge yaz
         self.speak = False  # yeni araci sesli soyle
+        self.recent_logged: list[tuple[float, str, str | None, np.ndarray]] = []  # (zaman, tur, renk, histogram)
         LOG_DIR.mkdir(exist_ok=True)
         print(f"[arac] model: {name}")
 
@@ -154,24 +155,34 @@ class VehicleTracker:
                 self.vehicles[best].plates[text] += 1
 
     def plate_seen(self, text: str, xyxy, frame: np.ndarray, now: float) -> dict | None:
-        """Her plaka okumasi. 5 sn icinde 2 kez ayni okunursa ve bir araca bagli degilse
-        dogrudan gunluge yazar (araca bagliysa arac kaydi plakasiyla yazilir)."""
+        """Her plaka okumasi. 5 sn icinde 2 kez ayni okunursa plaka gunlugune yazar
+        (ayni plaka 10 dk icinde tekrar yazilmaz). Bir aracin icindeyse aracin turu/rengi eklenir."""
         hits = [t for t in self.plate_hits.get(text, []) if now - t < 5] + [now]
         self.plate_hits[text] = hits
         if len(hits) < 2 or not self.log_all or now - self.recent_plates.get(text, 0) < 600:
             return None
-        cx, cy = (xyxy[0] + xyxy[2]) / 2, (xyxy[1] + xyxy[3]) / 2
-        if any(b[0] <= cx <= b[2] and b[1] <= cy <= b[3] for _, b in self.current):
-            return None  # bir aracin icinde: arac kaydi plakasiyla yazilacak
         self.recent_plates[text] = now
+        cx, cy = (xyxy[0] + xyxy[2]) / 2, (xyxy[1] + xyxy[3]) / 2
+        owner = next((self.vehicles[tid] for tid, b in self.current
+                      if b[0] <= cx <= b[2] and b[1] <= cy <= b[3] and tid in self.vehicles), None)
         H, W = frame.shape[:2]
         w, h = xyxy[2] - xyxy[0], xyxy[3] - xyxy[1]
         x1, y1 = int(max(0, xyxy[0] - w * 1.5)), int(max(0, xyxy[1] - h * 3))
         x2, y2 = int(min(W, xyxy[2] + w * 1.5)), int(min(H, xyxy[3] + h * 1.5))
-        v = Vehicle(first_seen=now, last_seen=now)
-        v.best_crop = frame[y1:y2, x1:x2].copy()
-        v.types["araç"] += 1
-        return self._write(v, text, now)
+        img = frame[y1:y2, x1:x2].copy()
+        cv2.rectangle(img, (int(xyxy[0]) - x1, int(xyxy[1]) - y1), (int(xyxy[2]) - x1, int(xyxy[3]) - y1), (0, 200, 255), 2)
+        day = time.strftime("%Y%m%d", time.localtime(now))
+        folder = LOG_DIR / day
+        folder.mkdir(parents=True, exist_ok=True)
+        name = time.strftime("%H%M%S", time.localtime(now)) + f"_plaka_{text}.jpg"
+        cv2.imwrite(str(folder / name), img, [cv2.IMWRITE_JPEG_QUALITY, 88])
+        import place
+
+        e = {"time": now, "plate": pretty(text), "type": owner.vtype if owner else None,
+             "color": owner.color if owner else None, "image": f"/vehicles/{day}/{name}", **place.fields()}
+        with open(folder / "plates.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(e, ensure_ascii=False) + "\n")
+        return e
 
     def boxes(self) -> list[tuple[tuple, str]]:
         """Bu karedeki araclar icin (kutu, etiket): 'Beyaz araba · 34 ABC 123'"""
@@ -190,22 +201,32 @@ class VehicleTracker:
         entries, says = [], []
         for tid, v in list(self.vehicles.items()):
             gone = now - v.last_seen > 3
-            ready = v.plate is not None or (gone and v.frames >= 12)
-            if not v.logged and ready:
-                plate = v.plate
-                if plate and now - self.recent_plates.get(plate, 0) < 600:
-                    v.logged = True  # ayni plaka 10 dk icinde tekrar yazilmaz
-                elif self.log_all and (plate or v.frames >= 12):
-                    v.logged = True
-                    if plate:
-                        self.recent_plates[plate] = now
-                    e = self._write(v, plate, now)
-                    entries.append(e)
-                    if self.speak:
-                        says.append(f"{(v.color or '').capitalize()} {v.vtype}" + (f", {pretty(plate)}" if plate else ""))
+            # Arac ~5 analizde (yaklasik 1,5 sn) goruldu ve kirpilmis fotografi var: hemen kaydet.
+            # (Eskiden kadrajdan cikmasi bekleniyordu; park halindeki araclar hic kaydedilmiyordu.)
+            ready = v.frames >= 5 and v.best_crop is not None and v.best_area >= 48 * 48
+            if not v.logged and ready and self.log_all:
+                v.logged = True
+                if self._seen_recently(v, now):
+                    continue  # ayni (park halindeki) arac kisa sure once yazildi; takip numarasi degisti
+                e = self._write(v, v.plate, now)
+                entries.append(e)
+                if self.speak:
+                    says.append(f"{(v.color or '').capitalize()} {v.vtype}")
             if gone and now - v.last_seen > 30:
                 del self.vehicles[tid]  # bellegi temiz tut
         return entries, says
+
+    def _seen_recently(self, v: Vehicle, now: float, window: float = 300) -> bool:
+        """Son 5 dk'da ayni tur + renk + benzer gorunumlu arac yazildi mi?"""
+        hsv = cv2.cvtColor(cv2.resize(v.best_crop, (64, 48)), cv2.COLOR_BGR2HSV)
+        hist = cv2.calcHist([hsv], [0, 1], None, [18, 8], [0, 180, 0, 256])
+        cv2.normalize(hist, hist)
+        self.recent_logged = [r for r in self.recent_logged if now - r[0] < window]
+        for _, t, c, h in self.recent_logged:
+            if t == v.vtype and c == v.color and cv2.compareHist(h, hist, cv2.HISTCMP_CORREL) > 0.9:
+                return True
+        self.recent_logged.append((now, v.vtype, v.color, hist))
+        return False
 
     def _write(self, v: Vehicle, plate: str | None, now: float) -> dict:
         day = time.strftime("%Y%m%d", time.localtime(now))
@@ -215,7 +236,7 @@ class VehicleTracker:
         img = None
         if v.best_crop is not None:
             crop = v.best_crop
-            k = 320 / max(crop.shape[:2])
+            k = 480 / max(crop.shape[:2])
             if k < 1:
                 crop = cv2.resize(crop, None, fx=k, fy=k)
             cv2.imwrite(str(folder / name), crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -228,18 +249,23 @@ class VehicleTracker:
             f.write(json.dumps(e, ensure_ascii=False) + "\n")
         return e
 
-    def history(self, limit: int = 60) -> dict:
-        items = []
+    @staticmethod
+    def _read(name: str, limit: int) -> list[dict]:
+        items: list[dict] = []
         for day in sorted(LOG_DIR.glob("*"), reverse=True):
-            log = day / "log.jsonl"
+            log = day / name
             if not log.exists():
                 continue
-            lines = log.read_text(encoding="utf-8").splitlines()
-            for line in reversed(lines):
+            for line in reversed(log.read_text(encoding="utf-8").splitlines()):
                 try:
                     items.append(json.loads(line))
                 except ValueError:
                     continue
                 if len(items) >= limit:
-                    return {"type": "vehicles", "items": items, "log_all": self.log_all, "speak": self.speak}
-        return {"type": "vehicles", "items": items, "log_all": self.log_all, "speak": self.speak}
+                    return items
+        return items
+
+    def history(self, limit: int = 60) -> dict:
+        """Araclar (tur, renk, foto) ve plakalar (ayri gunluk)."""
+        return {"type": "vehicles", "items": self._read("log.jsonl", limit), "plates": self._read("plates.jsonl", limit),
+                "log_all": self.log_all, "speak": self.speak}
