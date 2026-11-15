@@ -252,6 +252,11 @@ class ObjectFinder:
         while True:
             if not self._event.wait(1.0):
                 continue
+            # En fazla ~8 kez/sn: diger modellerle ekran kartini paylasir, canli gecikmeyi artirmasin.
+            # Bekleme kare ALINMADAN once: kutular en yeni kareye ait olsun.
+            wait = 0.125 - (time.time() - getattr(self, "_last_run", 0.0))
+            if wait > 0:
+                time.sleep(wait)
             with self._lock:
                 frame, self._frame = self._frame, None
                 self._event.clear()
@@ -264,6 +269,7 @@ class ObjectFinder:
                 if self._dirty or self._model is None:
                     self._prepare()
                 t = time.time()
+                self._last_run = t
                 r = self._model.predict(frame, device=self.device, conf=self.conf, verbose=False,
                                         half=self.device == 0)[0]
                 out = []

@@ -118,11 +118,14 @@ def install() -> None:
     from ultralytics.trackers.utils import reid
 
     orig = reid.ReID
+    cache: dict[str, GpuReID] = {}
 
     def factory(model, *a, **k):
+        if str(model) in cache:  # her sayim basinda yeniden cevirme (saniyeler surer)
+            return cache[str(model)]
         if str(model).endswith(".onnx"):
             try:
-                r = GpuReID(model)
+                r = cache[str(model)] = GpuReID(model)
                 print(f"[vision] kisi ReID: {Path(model).name} ({r.device}, FP16)")
                 return r
             except Exception as e:  # noqa: BLE001

@@ -136,10 +136,14 @@ class Detector:
         pm = next((m for m in ("yolo26x.pt", "yolo11x.pt") if (MODELS / m).exists()), None)
         self.person_model = YOLO(str(MODELS / pm)) if pm else None
         print(f"[vision] kisi modeli: {pm or 'KKD modeli'}")
-        # Takipci: kisiyi kiyafet/vucuttan taniyan ozel ReID modeli (GPU'da)
-        self.tracker_cfg = str(HERE / "tracker.yaml")
-        reid_model = MODELS / "yolo26x-reid.onnx"
-        if reid_model.exists():
+        # Takipci. Normal canli goruntude: dedektorun kendi ozellikleri (hizli).
+        # Sayim sirasinda: kisiyi kiyafet/vucuttan taniyan ozel ReID modeli (GPU'da).
+        # ReID her karede gorunen her kisi icin calisir (4 kiside ~40 ms); surekli acik olunca
+        # canli gecikme 120-150 ms'ye cikiyordu.
+        self.tracker_fast = self.tracker_cfg = str(HERE / "tracker.yaml")
+        reid_model = next((MODELS / n for n in ("yolo26m-reid.onnx", "yolo26x-reid.onnx")
+                           if (MODELS / n).exists()), None)
+        if reid_model is not None:
             import reid_gpu
 
             reid_gpu.install()
@@ -150,10 +154,13 @@ class Detector:
             (HERE / "tracker_run.yaml").write_text(txt + "\n", encoding="utf-8")
             self.tracker_cfg = str(HERE / "tracker_run.yaml")
         self.counting = False  # sayim oturumu suruyor mu (uzaktakiler icin buyuk cozunurluk)
-        if self.person_model is not None:  # isinma: ReID cevirisi ilk karede beklemesin
+        self.tracker_count = self.tracker_cfg
+        self._active_tracker = None
+        if self.person_model is not None:  # isinma: ReID cevirisi ilk sayimda beklemesin
             blank = np.zeros((720, 1280, 3), np.uint8)
-            for sz in (640, args.count_imgsz):
-                self.person_model.track(blank, persist=True, classes=[0], tracker=self.tracker_cfg,
+            for cfg, sz in ((self.tracker_count, args.count_imgsz), (self.tracker_fast, 640)):
+                self._use_tracker(cfg)
+                self.person_model.track(blank, persist=True, classes=[0], tracker=cfg,
                                         device=self.device, verbose=False, half=self.device == 0, imgsz=sz)
 
         self.required: list[str] = self._load_ppe()
@@ -282,6 +289,15 @@ class Detector:
             for tr in getattr(pr, "trackers", None) or []:
                 tr.reset()
 
+    def _use_tracker(self, cfg: str) -> None:
+        """Takipci ayarini degistir (sayim basi/sonu). Eski takipci silinir, yenisi ilk karede kurulur."""
+        if cfg == self._active_tracker:
+            return
+        pr = getattr(self.person_model, "predictor", None)
+        if pr is not None and hasattr(pr, "trackers"):
+            del pr.trackers
+        self._active_tracker = cfg
+
     def _key(self, tid: int, t: Track) -> str:
         return f"i{t.ident}" if t.ident else f"t{tid}"
 
@@ -298,16 +314,32 @@ class Detector:
         parts: dict[str, list[tuple]] = {}
         res = None
         half = self.device == 0
+        tm = self._tm = getattr(self, "_tm", {})  # parca parca sure olcumu (log'a yazilir)
+        t0 = time.perf_counter()
+
+        def lap(name: str) -> None:
+            nonlocal t0
+            t1 = time.perf_counter()
+            tm[name] = tm.get(name, 0.0) * 0.9 + (t1 - t0) * 1000 * 0.1
+            t0 = t1
+
         if self.person_model is not None and (self.enabled["ppe"] or self.enabled["faces"]):
-            # Sayim sirasinda buyuk cozunurluk: uzaktaki kucuk kisiler de bulunur
+            # Sayim sirasinda buyuk cozunurluk + ozel ReID: uzaktakiler bulunur, tekrar sayilmaz
+            cfg = self.tracker_count if self.counting else self.tracker_fast
+            self._use_tracker(cfg)
             pres = self.person_model.track(
-                frame, persist=True, classes=[0], conf=self.args.conf, tracker=self.tracker_cfg,
+                frame, persist=True, classes=[0], conf=self.args.conf, tracker=cfg,
                 device=self.device, verbose=False, half=half, imgsz=self.args.count_imgsz if self.counting else 640,
             )[0]
             if pres.boxes is not None and pres.boxes.id is not None:
                 for b, tid in zip(pres.boxes.xyxy.cpu().numpy(), pres.boxes.id.int().cpu().tolist()):
                     persons.append((tid, tuple(float(v) for v in b)))
-        if self.enabled["ppe"]:
+        lap("kisi")
+        # KKD parcalari her 2 karede bir (sayim sirasinda her kare); arada son sonuc kullanilir
+        ppe_now = self.counting or self.frame_i % 2 == 0 or self.person_model is None
+        if self.enabled["ppe"] and not ppe_now:
+            parts = {k: list(v) for k, v in getattr(self, "_last_parts", {}).items()}
+        if self.enabled["ppe"] and ppe_now:
             if self.person_model is None:
                 res = self.model.track(
                     frame, persist=True, conf=self.args.conf, tracker=self.tracker_cfg,
@@ -326,6 +358,9 @@ class Detector:
                         persons.append((tid, b))
                 else:
                     parts.setdefault(name, []).append(b)
+        if ppe_now:
+            self._last_parts = {k: list(v) for k, v in parts.items()}
+        lap("kkd")
 
         # Bone (deneysel): yalnizca zorunluysa calisir
         if "hairnet" in self.required and self.enabled["hairnet"] and self.enabled["ppe"]:
@@ -484,9 +519,10 @@ class Detector:
                     announcements.append(f"Dikkat: {name} görüldü.")
 
         # 6) Araclar (tur + renk) ve plakalar; plaka icinde bulundugu araca baglanir
+        lap("yuz_qr_nesne")
         vehicles_on = self.enabled.get("vehicles", True)
         vehicle_log_extra: list[dict] = []
-        if vehicles_on:
+        if vehicles_on and self.frame_i % 3 == 0:  # araclar yavas hareket eder: 3 karede bir yeter
             self.vehicles.update(frame, now)
         else:
             self.vehicles.current = []
@@ -510,6 +546,9 @@ class Detector:
             vl, _vsay = self.vehicles.collect(now)  # her araci sesli okumak cok gurultulu
             vehicle_log.extend(vl)
 
+        lap("arac_plaka")
+        if self.frame_i % 150 == 0:
+            print("[sure] " + ", ".join(f"{k} {v:.0f} ms" for k, v in tm.items()), flush=True)
         visible = sum(1 for tid, _ in persons if self.tracks[tid].ident or self.tracks[tid].counted_by_track)
         return {
             "type": "detections",
@@ -706,7 +745,7 @@ def run(args: argparse.Namespace) -> None:
                                 on = bool(cmd.get("on"))
                                 if on != state["ai"]:
                                     state["ai"] = on
-                                    say("Yapay zekâ katmanı çalışıyor. Seni dinliyorum." if on
+                                    say("Yapay zekâ katmanı açıldı, görüntü inceleniyor." if on
                                         else "Yapay zekâ katmanı kapatıldı.")
                                 elif cmd.get("source") == "voice":
                                     say("Yapay zekâ katmanı zaten açık." if on else "Yapay zekâ katmanı zaten kapalı.")
