@@ -66,6 +66,25 @@
       <div id="ppeBoxes" style="display:flex;flex-wrap:wrap;gap:6px 12px"></div>
       <p style="color:var(--muted);font-size:12px;margin:6px 0 0">Seçilenler eksikse gözlükten sesli uyarı verilir.</p>
     </div>
+    <div>
+      <h2>Nesne kütüphanesi</h2>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        <label><input type="radio" name="objMode" value="list"> Özel liste</label>
+        <label><input type="radio" name="objMode" value="catalog"> Geniş katalog (4.585 tür)</label>
+        <label><input type="checkbox" id="objEnabled"> Açık</label>
+      </div>
+      <div id="objListWrap">
+        <form id="objForm" style="display:flex;gap:6px;margin-top:8px">
+          <input id="objInput" list="objDict" placeholder="forklift, yangın tüpü, ladder…" autocomplete="off"
+            style="flex:1;min-width:0;background:#202328;color:var(--fg);border:1px solid #333;border-radius:6px;padding:6px 8px">
+          <button>Ekle</button>
+        </form>
+        <datalist id="objDict"></datalist>
+        <ul id="objItems" style="list-style:none;margin:8px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px"></ul>
+        <p style="color:var(--muted);font-size:12px;margin:6px 0 0">🔔 = görülünce gözlükten sesli bildir. Sözlükte olmayanları İngilizce yaz.</p>
+      </div>
+      <div id="objNow" style="margin-top:8px;font-size:13px;color:var(--muted)"></div>
+    </div>
     <div id="faceWrap" style="display:none">
       <h2>Sayılan kişiler (yüz)</h2>
       <div id="faces" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px"></div>
@@ -127,6 +146,7 @@ function onDetections(m) {
   const c = m.counts;
   cVisible.textContent = c.visible; cTotal.textContent = c.total_people;
   renderPpeCounts(c.ppe || []);
+  renderObjNow(m.objects, m.objects_ms);
   if (m.faces?.length) onFaces(m.faces);
   if (m.fps != null) visFps = m.fps;
   setDot("vis", true, `Analiz: ${visFps ?? "…"} FPS · ${m.latency_ms} ms`);
@@ -174,6 +194,45 @@ function onPpeConfig(m) {
     ppeBoxes.append(lab);
   }
 }
+// ---- Genis nesne kutuphanesi ----
+let objCfg = null;
+function sendObj(patch) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "objects_set", ...patch }));
+}
+function onObjCfg(m) {
+  objCfg = m;
+  document.querySelectorAll("input[name=objMode]").forEach((r) => (r.checked = r.value === m.mode));
+  objEnabled.checked = m.enabled;
+  objListWrap.style.opacity = m.mode === "list" ? 1 : 0.4;
+  objDict.innerHTML = m.dictionary.map((d) => `<option value="${d}">`).join("");
+  objItems.innerHTML = "";
+  for (const it of m.items) {
+    const on = m.alerts.includes(it);
+    const li = document.createElement("li");
+    li.style.cssText = "background:#16323a;border-radius:6px;padding:3px 6px;display:flex;gap:4px;align-items:center";
+    const bell = document.createElement("button");
+    bell.textContent = on ? "🔔" : "🔕"; bell.title = "Sesli bildirim"; bell.style.cssText = "padding:0 4px";
+    bell.onclick = () => sendObj({ alerts: on ? m.alerts.filter((a) => a !== it) : [...m.alerts, it] });
+    const x = document.createElement("button");
+    x.textContent = "×"; x.style.cssText = "padding:0 6px";
+    x.onclick = () => sendObj({ items: m.items.filter((a) => a !== it), alerts: m.alerts.filter((a) => a !== it) });
+    li.append(bell, it, x);
+    objItems.append(li);
+  }
+}
+document.querySelectorAll("input[name=objMode]").forEach((r) => (r.onchange = () => sendObj({ mode: r.value })));
+objEnabled.onchange = () => sendObj({ enabled: objEnabled.checked });
+objForm.onsubmit = (e) => {
+  e.preventDefault();
+  const add = objInput.value.split(",").map((s) => s.trim()).filter(Boolean);
+  if (add.length && objCfg) sendObj({ items: [...new Set([...objCfg.items, ...add])] });
+  objInput.value = "";
+};
+function renderObjNow(objs, ms) {
+  const e = Object.entries(objs || {});
+  objNow.textContent = e.length ? "Şu an: " + e.map(([k, v]) => (v > 1 ? `${k} ×${v}` : k)).join(", ") + (ms ? ` · ${ms} ms` : "") : "";
+}
+
 const faceEls = {};
 function onFaces(list) {
   faceWrap.style.display = "block";
@@ -240,6 +299,7 @@ function connect() {
       else if (m.type === "detections") { onDetections(m); if (m.plate_captures?.length) onCaptures(m.plate_captures); }
       else if (m.type === "watchlist") { watchlist = m.plates; renderWatch(); }
       else if (m.type === "ppe") onPpeConfig(m);
+      else if (m.type === "objects_cfg") onObjCfg(m);
       else if (m.type === "announce") onAnnounce(m.text);
       return;
     }

@@ -114,6 +114,13 @@ class Detector:
         self.required: list[str] = self._load_ppe()
         self.codes = CodeReaderThread()
 
+        self.objects = None
+        if args.objects:
+            from objects import ObjectFinder
+
+            self.objects = ObjectFinder(self.device)
+            print(f"[vision] genis nesne kutuphanesi acik (mod: {self.objects.mode})")
+
         self.plates = None
         if args.plates:
             from plates import PlateReader
@@ -150,6 +157,8 @@ class Detector:
         self.missing_totals: dict[str, int] = {k: 0 for k in PPE_ITEMS}
         self.ok_totals: dict[str, int] = {k: 0 for k in PPE_ITEMS}
         self.qr_last: dict[str, float] = {}
+        self.obj_last_alert: dict[str, float] = {}
+        self.obj_seen: dict[str, int] = {}  # ardisik gorulme (yanlis alarmi azaltmak icin)
 
     # ----------------------------------------------------------------------
     def process(self, frame: np.ndarray) -> tuple[dict, list[str]]:
@@ -162,7 +171,7 @@ class Detector:
         # 1) Tum KKD siniflari + takip (tek model, tek gecis)
         res = self.model.track(
             frame, persist=True, conf=self.args.conf, tracker=str(HERE / "tracker.yaml"),
-            device=self.device, verbose=False,
+            device=self.device, verbose=False, half=self.device == 0,
         )[0]
         persons: list[tuple[int, tuple]] = []
         parts: dict[str, list[tuple]] = {}
@@ -258,7 +267,24 @@ class Detector:
                 announcements.append(f"{'QR kod' if kind == 'QR' else 'Barkod'}: {text}")
             self.qr_last[text] = now
 
-        # 4) Plakalar
+        # 4) Genis nesne kutuphanesi (ayri thread)
+        objects_now: dict[str, int] = {}
+        if self.objects is not None:
+            self.objects.submit(frame)
+            for xyxy, name, conf in self.objects.latest():
+                objects_now[name] = objects_now.get(name, 0) + 1
+                boxes_out.append(_box(xyxy, w, h, f"{name} {conf:.2f}", "#22d3ee"))
+            for name in list(self.obj_seen):
+                if name not in objects_now:
+                    self.obj_seen[name] = 0
+            for name in objects_now:
+                self.obj_seen[name] = self.obj_seen.get(name, 0) + 1
+                if (name in self.objects.alerts and self.obj_seen[name] == 4
+                        and now - self.obj_last_alert.get(name, 0) > self.args.obj_cooldown):
+                    self.obj_last_alert[name] = now
+                    announcements.append(f"Dikkat: {name} görüldü.")
+
+        # 5) Plakalar
         plate_captures: list[dict] = []
         if self.plates is not None:
             pboxes, pann, plate_captures = self.plates.process(frame)
@@ -280,6 +306,8 @@ class Detector:
             },
             "faces": new_faces,
             "plate_captures": plate_captures,
+            "objects": objects_now,
+            "objects_ms": self.objects.ms if self.objects else None,
         }
         return result, announcements
 
@@ -394,6 +422,8 @@ def run(args: argparse.Namespace) -> None:
 
                 def send_config() -> None:
                     send(det.ppe_config())
+                    if det.objects is not None:
+                        send(det.objects.config())
                     if det.plates is not None:
                         send({"type": "watchlist", "plates": det.plates.watchlist_pretty()})
 
@@ -420,6 +450,10 @@ def run(args: argparse.Namespace) -> None:
                             elif t == "ppe_set":
                                 det.set_required(cmd.get("required", []))
                                 print(f"[vision] zorunlu KKD: {det.required}")
+                                send_config()
+                            elif t == "objects_set" and det.objects is not None:
+                                det.objects.configure(cmd)
+                                print(f"[vision] nesne ayari: mod={det.objects.mode} liste={det.objects.items}")
                                 send_config()
                             elif t == "hello":
                                 send_config()
@@ -464,6 +498,8 @@ def main() -> None:
     ap.add_argument("--no-faces", dest="save_faces", action="store_false", help="yuz kaydini kapat")
     ap.add_argument("--face-min-px", type=int, default=40, help="kaydedilecek yuzun min. boyutu (piksel)")
     ap.add_argument("--qr-cooldown", type=float, default=15.0, help="ayni QR'i tekrar okumadan once bekleme (sn)")
+    ap.add_argument("--no-objects", dest="objects", action="store_false", help="genis nesne kutuphanesini kapat")
+    ap.add_argument("--obj-cooldown", type=float, default=30.0, help="ayni nesne uyarisi arasi bekleme (sn)")
     ap.add_argument("--no-plates", dest="plates", action="store_false", help="plaka okumayi kapat")
     ap.add_argument("--plate-every", type=int, default=3, help="plaka okumayi kac karede bir yap")
     run(ap.parse_args())
