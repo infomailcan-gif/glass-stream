@@ -669,6 +669,16 @@ struct RecordingsView: View {
   // MARK: Araclar ve plakalar
 
   @ViewBuilder private var carsSection: some View {
+    Card {
+      Toggle(isOn: Binding(get: { model.logVehicles }, set: { model.setVehicleLogging(vehicles: $0) })) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Araçları kaydet").foregroundStyle(Theme.text)
+          Text("Açıkken görülen her araç türü, rengi ve fotoğrafıyla kaydedilir. Araç tanıma modeli de açılır.")
+            .font(.footnote).foregroundStyle(Theme.muted)
+        }
+      }
+      .tint(Theme.amber)
+    }
     Card(title: "Görülen araçlar") {
       if model.vehicleLog.isEmpty {
         Text("Birkaç saniye bakılan her araç; türü, rengi, saati, yeri ve fotoğrafıyla burada.")
@@ -703,6 +713,16 @@ struct RecordingsView: View {
   // MARK: Plakalar
 
   @ViewBuilder private var platesSection: some View {
+    Card {
+      Toggle(isOn: Binding(get: { model.logPlates }, set: { model.setVehicleLogging(plates: $0) })) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Plakaları kaydet").foregroundStyle(Theme.text)
+          Text("Açıkken okunan her plaka fotoğrafıyla kaydedilir. Plaka okuma modeli de açılır. Uzaktaki plakalar için Ayarlar'da “Detay” profilini seç.")
+            .font(.footnote).foregroundStyle(Theme.muted)
+        }
+      }
+      .tint(Theme.amber)
+    }
     Card(title: "Okunan plakalar") {
       if model.plateLog.isEmpty {
         Text("Okunan her plaka; saati, yeri, varsa araç türü ve fotoğrafıyla burada. Aynı plaka 10 dakikada bir yazılır.")

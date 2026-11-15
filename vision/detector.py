@@ -522,7 +522,7 @@ class Detector:
         lap("yuz_qr_nesne")
         vehicles_on = self.enabled.get("vehicles", True)
         vehicle_log_extra: list[dict] = []
-        if vehicles_on and self.frame_i % 3 == 0:  # araclar yavas hareket eder: 3 karede bir yeter
+        if vehicles_on and self.frame_i % 2 == 0:  # araclar yavas hareket eder: 2 karede bir yeter
             self.vehicles.update(frame, now)
         else:
             self.vehicles.current = []
@@ -854,9 +854,19 @@ def run(args: argparse.Namespace) -> None:
                                 txt = str(cmd.get("text", ""))[:300]
                                 det.qr_last[txt] = time.time()  # PC ayni QR'i tekrar anons etmesin
                                 itm.on_qr(txt, frame_jpeg(state["frame"]) if state["frame"] is not None else None)
-                            elif t == "vehicles_set":  # {"log_all": bool, "speak": bool}
-                                if "log_all" in cmd:
-                                    det.vehicles.log_all = bool(cmd["log_all"])
+                            elif t == "vehicles_set":  # {"log_vehicles": bool, "log_plates": bool, "speak": bool}
+                                if "log_all" in cmd:  # eski web paneli
+                                    cmd.setdefault("log_vehicles", cmd["log_all"])
+                                    cmd.setdefault("log_plates", cmd["log_all"])
+                                det.vehicles.set_options(
+                                    bool(cmd["log_vehicles"]) if "log_vehicles" in cmd else None,
+                                    bool(cmd["log_plates"]) if "log_plates" in cmd else None)
+                                # Kaydetmek icin ilgili model de acik olmali
+                                turn_on = {k: True for k, f in (("vehicles", "log_vehicles"), ("plates", "log_plates"))
+                                           if cmd.get(f)}
+                                if turn_on:
+                                    det.set_models(turn_on)
+                                    send(det.models_config())
                                 if "speak" in cmd:
                                     det.vehicles.speak = bool(cmd["speak"])
                                 send(det.vehicles.history())

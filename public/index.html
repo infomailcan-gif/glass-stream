@@ -601,7 +601,7 @@ function onSessions(m) {
 
 // ---------- Arac gunlugu ----------
 function onVehicles(m) {
-  $("vehLogAll").checked = m.log_all; $("vehSpeak").checked = m.speak;
+  $("vehLogAll").checked = m.log_vehicles !== false && m.log_plates !== false; $("vehSpeak").checked = m.speak;
   const box = $("vehList");
   if (!m.items.length) { box.innerHTML = `<p class="hint">Henüz araç yok.</p>`; return; }
   box.innerHTML = "";

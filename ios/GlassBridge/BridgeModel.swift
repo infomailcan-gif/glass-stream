@@ -667,6 +667,8 @@ final class BridgeModel {
                        place: v["place"] as? String)
         }
       }
+      if let on = obj["log_vehicles"] as? Bool { logVehicles = on }
+      if let on = obj["log_plates"] as? Bool { logPlates = on }
       if let items = obj["plates"] as? [[String: Any]] {
         plateLog = items.map { v in
           VehicleEntry(time: v["time"] as? Double ?? 0, type: v["type"] as? String ?? "",
@@ -976,6 +978,16 @@ final class BridgeModel {
 
   var vehicleLog: [VehicleEntry] = []
   var plateLog: [VehicleEntry] = []
+  var logVehicles = true
+  var logPlates = true
+
+  /// Araclari / plakalari kaydet. Acilinca ilgili model de PC'de acilir.
+  func setVehicleLogging(vehicles: Bool? = nil, plates: Bool? = nil) {
+    var p: [String: Any] = ["type": "vehicles_set"]
+    if let vehicles { logVehicles = vehicles; p["log_vehicles"] = vehicles }
+    if let plates { logPlates = plates; p["log_plates"] = plates }
+    uploader.sendJSON(p)
+  }
 
   // MARK: - Bilgi islem
 

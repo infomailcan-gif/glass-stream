@@ -26,6 +26,7 @@ from plates import pretty
 HERE = Path(__file__).resolve().parent
 MODELS = HERE / "models"
 LOG_DIR = HERE / "vehicles"
+CFG_FILE = HERE / "vehicles_cfg.json"
 
 # COCO sinif no -> Turkce
 TYPES = {1: "bisiklet", 2: "araba", 3: "motosiklet", 5: "otobüs", 7: "kamyon"}
@@ -98,7 +99,7 @@ class Vehicle:
 
 
 class VehicleTracker:
-    def __init__(self, device, conf: float = 0.4) -> None:
+    def __init__(self, device, conf: float = 0.25) -> None:
         name = next(n for n in ("yolo26x.pt", "yolo11x.pt", "yolo11l.pt", "yolo11s.pt", "yolo11n.pt") if (MODELS / n).exists())
         self.model = YOLO(str(MODELS / name))
         self.device = device
@@ -107,8 +108,15 @@ class VehicleTracker:
         self.current: list[tuple[int, tuple]] = []  # bu karedeki (id, kutu)
         self.recent_plates: dict[str, float] = {}
         self.plate_hits: dict[str, list[float]] = {}
-        self.log_all = True  # tum plakalari gunluge yaz
         self.speak = False  # yeni araci sesli soyle
+        # Kaydetme secenekleri (telefon / web'den degisir, dosyada saklanir)
+        cfg = {}
+        try:
+            cfg = json.loads(CFG_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+        self.log_vehicles = bool(cfg.get("log_vehicles", True))
+        self.log_plates = bool(cfg.get("log_plates", True))
         self.recent_logged: list[tuple[float, str, str | None, np.ndarray]] = []  # (zaman, tur, renk, histogram)
         LOG_DIR.mkdir(exist_ok=True)
         print(f"[arac] model: {name}")
@@ -159,7 +167,7 @@ class VehicleTracker:
         (ayni plaka 10 dk icinde tekrar yazilmaz). Bir aracin icindeyse aracin turu/rengi eklenir."""
         hits = [t for t in self.plate_hits.get(text, []) if now - t < 5] + [now]
         self.plate_hits[text] = hits
-        if len(hits) < 2 or not self.log_all or now - self.recent_plates.get(text, 0) < 600:
+        if len(hits) < 2 or not self.log_plates or now - self.recent_plates.get(text, 0) < 600:
             return None
         self.recent_plates[text] = now
         cx, cy = (xyxy[0] + xyxy[2]) / 2, (xyxy[1] + xyxy[3]) / 2
@@ -203,8 +211,9 @@ class VehicleTracker:
             gone = now - v.last_seen > 3
             # Arac ~5 analizde (yaklasik 1,5 sn) goruldu ve kirpilmis fotografi var: hemen kaydet.
             # (Eskiden kadrajdan cikmasi bekleniyordu; park halindeki araclar hic kaydedilmiyordu.)
-            ready = v.frames >= 5 and v.best_crop is not None and v.best_area >= 48 * 48
-            if not v.logged and ready and self.log_all:
+            # Dusuk cozunurluklu yayinda (360x640) araclar ~60x30 piksel kalir: esikler buna gore
+            ready = v.frames >= 3 and v.best_crop is not None and v.best_area >= 24 * 24
+            if not v.logged and ready and self.log_vehicles:
                 v.logged = True
                 if self._seen_recently(v, now):
                     continue  # ayni (park halindeki) arac kisa sure once yazildi; takip numarasi degisti
@@ -268,4 +277,12 @@ class VehicleTracker:
     def history(self, limit: int = 60) -> dict:
         """Araclar (tur, renk, foto) ve plakalar (ayri gunluk)."""
         return {"type": "vehicles", "items": self._read("log.jsonl", limit), "plates": self._read("plates.jsonl", limit),
-                "log_all": self.log_all, "speak": self.speak}
+                "log_vehicles": self.log_vehicles, "log_plates": self.log_plates, "speak": self.speak}
+
+    def set_options(self, log_vehicles: bool | None = None, log_plates: bool | None = None) -> None:
+        if log_vehicles is not None:
+            self.log_vehicles = log_vehicles
+        if log_plates is not None:
+            self.log_plates = log_plates
+        CFG_FILE.write_text(json.dumps({"log_vehicles": self.log_vehicles, "log_plates": self.log_plates}),
+                            encoding="utf-8")

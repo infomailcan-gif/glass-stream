@@ -45,8 +45,9 @@ class SCRFD:
     def __init__(self, path: Path, thresh: float = 0.5) -> None:
         import onnxruntime as ort
 
-        so = ort.SessionOptions()
-        so.log_severity_level = 3  # dinamik giris boyutu uyarilarini sustur
+        from cpu_limits import session_options
+
+        so = session_options(2)  # en fazla 2 cekirdek; dinamik boyut uyarilari kapali
         self.sess = ort.InferenceSession(str(path), so, providers=["CPUExecutionProvider"])
         self.inp = self.sess.get_inputs()[0].name
         self.thresh = thresh
@@ -121,7 +122,9 @@ class FaceID:
         if self.backend.startswith("arcface"):
             import onnxruntime as ort
 
-            self.sess = ort.InferenceSession(str(MODELS / rec), providers=["CPUExecutionProvider"])
+            from cpu_limits import session_options
+
+            self.sess = ort.InferenceSession(str(MODELS / rec), session_options(2), providers=["CPUExecutionProvider"])
             self.backend = f"arcface ({rec})"
             self.inp = self.sess.get_inputs()[0].name
             self.same = 0.42  # ArcFace kosinus esigi
@@ -258,10 +261,15 @@ class FaceWorker:
         while True:
             if not self._event.wait(1.0):
                 continue
+            # Isler arasi en az 0,2 sn: islemciyi surekli doldurmasin (ana dongu beklemesin)
+            wait = 0.2 - (time.time() - getattr(self, "_last_job", 0.0))
+            if wait > 0:
+                time.sleep(wait)
             with self._lock:
                 frame, regions = self._job
                 self._event.clear()
             now = time.time()
+            self._last_job = now
             try:
                 for tid, region in regions:
                     f = self.fid.find_face(frame, region)

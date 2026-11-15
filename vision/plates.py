@@ -107,9 +107,13 @@ class PlateReader:
         # En buyuk plaka bulucu (s-608) + en buyuk global OCR (cct-s-v2).
         # s-608 bazi plakalari kaciriyor (testte sentetik plakayi bulamadi, t-384 buldu):
         # buyuk model bir sey bulamazsa kucuk model de bakar.
-        self.alpr = ALPR(detector_model=detector_model, ocr_model="cct-s-v2-global-model")
+        from cpu_limits import session_options
+
+        so = dict(detector_sess_options=session_options(2), ocr_sess_options=session_options(1))
+        self.alpr = ALPR(detector_model=detector_model, ocr_model="cct-s-v2-global-model", **so)
         self.alpr_backup = ALPR(detector_model="yolo-v9-t-384-license-plate-end2end",
-                                ocr_model="cct-s-v2-global-model")
+                                ocr_model="cct-s-v2-global-model", **so)
+        self._runs = 0
         self._lock = threading.Lock()
         self._frame = None
         self._event = threading.Event()
@@ -161,6 +165,11 @@ class PlateReader:
         while True:
             if not self._event.wait(1.0):
                 continue
+            # En fazla ~4 kez/sn (plaka icin yeterli; islemciyi bos birak)
+            wait = 0.25 - (time.time() - getattr(self, "_last_run", 0.0))
+            if wait > 0:
+                time.sleep(wait)
+            self._last_run = time.time()
             with self._lock:
                 frame, self._frame = self._frame, None
                 self._event.clear()
@@ -190,7 +199,9 @@ class PlateReader:
         boxes, announcements, captures = [], [], []
         self.last_boxes = []
         self.last_reads = []
-        results = self.alpr.predict(frame) or self.alpr_backup.predict(frame)
+        # Yedek (kucuk) model her 3 denemede bir: ikisi birden her karede islemciyi yoruyordu
+        self._runs += 1
+        results = self.alpr.predict(frame) or (self.alpr_backup.predict(frame) if self._runs % 3 == 0 else [])
         for r in results:
             bb = r.detection.bounding_box
             xyxy = (int(bb.x1), int(bb.y1), int(bb.x2), int(bb.y2))

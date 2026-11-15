@@ -24,3 +24,4 @@ vision/vehicles/
 vision/sessions/
 vision/qr/
 vision/tracker_run.yaml
+vision/vehicles_cfg.json
