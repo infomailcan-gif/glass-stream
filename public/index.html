@@ -258,6 +258,11 @@
     </section>
 
     <section class="pane" id="pAnalysis" role="tabpanel">
+      <h3>Kişi sayım oturumu</h3>
+      <div class="row" style="align-items:center">
+        <button class="btn" id="countBtn">Sayımı başlat</button>
+        <span class="hint" id="countInfo" style="margin:0">Sesli: “kişi saymayı başlat / bitir”</span>
+      </div>
       <h3>Sayım</h3>
       <div class="stats" id="stats">
         <div class="stat"><b id="cVisible">0</b><span>şu an görünen</span></div>
@@ -274,6 +279,8 @@
         <h3>Yakalanan plakalar</h3>
         <div class="captures" id="captures"></div>
       </div>
+      <h3>Sayım oturumları</h3>
+      <div id="sessList"><p class="hint">Henüz sayım oturumu yok.</p></div>
       <h3>Araç günlüğü</h3>
       <div class="checks">
         <label class="chip"><input type="checkbox" id="vehLogAll"> Tüm araçları kaydet</label>
@@ -547,6 +554,36 @@ $("itScan").onclick = () => send({ type: "it_scan" });
 $("itPcErr").onclick = () => send({ type: "it_error", pc: true });
 $("itEcg").onclick = () => send({ type: "ecg" });
 
+// ---------- Kisi sayim oturumlari ----------
+let countActive = false, countSince = null;
+function onCountState(m) {
+  countActive = m.active; countSince = m.start;
+  $("countBtn").textContent = countActive ? "Sayımı bitir" : "Sayımı başlat";
+  $("countBtn").classList.toggle("live", countActive);
+  if (!countActive) $("countInfo").textContent = "Sesli: “kişi saymayı başlat / bitir”";
+}
+setInterval(() => {
+  if (!countActive || !countSince) return;
+  const s = Math.round(Date.now() / 1000 - countSince);
+  $("countInfo").textContent = `Sürüyor: ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")} · ${$("cTotal").textContent} kişi`;
+}, 1000);
+$("countBtn").onclick = () => send({ type: countActive ? "count_stop" : "count_start" });
+function onSessions(m) {
+  const box = $("sessList");
+  if (!m.items.length) { box.innerHTML = `<p class="hint">Henüz sayım oturumu yok.</p>`; return; }
+  box.innerHTML = "";
+  for (const s of m.items) {
+    const d = new Date(s.start * 1000);
+    const miss = (s.ppe || []).map((p) => `${p.ok} ${p.with || p.name.toLowerCase() + " var"}, ${p.missing} ${p.without || "eksik"}`).join(" · ");
+    const el = document.createElement("article"); el.className = "itcard";
+    el.innerHTML = `<header><b>${s.total} kişi</b><span>${d.toLocaleDateString()} ${d.toLocaleTimeString().slice(0, 5)} · ${s.minutes} dk</span></header>
+      ${s.location ? `<p class="hint" style="margin:0 0 6px">${esc(s.location)}</p>` : ""}
+      ${miss ? `<p class="sum" style="color:#ffb3a8">${esc(miss)}</p>` : ""}
+      <div class="faces">${(s.faces || []).map((f) => `<a href="/faces/${f.file}" target="_blank"><img alt="" src="/faces/${f.file}"><span>Kişi ${f.id}</span></a>`).join("")}</div>`;
+    box.append(el);
+  }
+}
+
 // ---------- Arac gunlugu ----------
 function onVehicles(m) {
   $("vehLogAll").checked = m.log_all; $("vehSpeak").checked = m.speak;
@@ -644,6 +681,8 @@ function connect() {
         case "it_list": onItList(m); break;
         case "it_qr": onItQr(m); break;
         case "vehicles": onVehicles(m); break;
+        case "count_state": onCountState(m); break;
+        case "sessions": onSessions(m); break;
         case "ai_state": onAiState(m); break;
         case "recording": onRecording(m); break;
         case "voice": onAnnounce(`Duyulan: “${m.text}”`); break;

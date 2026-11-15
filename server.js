@@ -152,7 +152,8 @@ visionWss.on("connection", (ws) => {
     // detections: telefondaki "Canli" sekmesi kutulari cizer; models: modeller sekmesi
     if (["announce", "ai_state", "recording", "assistant", "models", "detections",
          "ppe", "objects_cfg", "watchlist", "faces_list",
-         "it_state", "it_event", "it_list", "it_capture_request", "it_qr", "vehicles"].includes(msg.type)) {
+         "it_state", "it_event", "it_list", "it_capture_request", "it_qr", "vehicles",
+         "count_state", "sessions"].includes(msg.type)) {
       if (msg.type === "announce") console.log(`[anons] ${msg.text}`);
       for (const phone of ingestWss.clients) if (phone.readyState === 1) phone.send(text);
     }

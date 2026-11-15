@@ -121,6 +121,14 @@ struct PanelView: View {
         ControlRow(icon: "brain", title: "Yapay zekâ katmanı",
                    detail: "Analiz ve Claude sohbet modu", isOn: model.aiOn == true) { model.toggleAI() }
         Divider().overlay(Theme.line)
+        ControlRow(icon: "person.3.sequence", title: "Kişi sayımı",
+                   detail: model.countActive
+                     ? "Sürüyor · \(model.totalPeople) kişi" + (model.countLocation.map { " · " + $0 } ?? "")
+                     : "Alanı say, bitince kaydedilir",
+                   isOn: model.countActive, tint: Theme.amber) {
+          model.countActive ? model.stopCount() : model.startCount()
+        }
+        Divider().overlay(Theme.line)
         ControlRow(icon: "record.circle", title: "Video kaydı",
                    detail: model.recordingActive ? "Kayıt sürüyor" : "Bilgisayara kaydedilir",
                    isOn: model.recordingActive, tint: Theme.bad) { model.toggleRecord() }
@@ -451,6 +459,7 @@ struct FlowChips: View {
 struct RecordingsView: View {
   @Bindable var model: BridgeModel
   @State private var playing: BridgeModel.RecFile?
+  @State private var openSession: BridgeModel.CountSession?
 
   var body: some View {
     Page(title: "Kayıtlar ve kişiler") {
@@ -475,6 +484,34 @@ struct RecordingsView: View {
         .disabled(!model.socketConnected)
         Text("Kayıt bilgisayara yapılır. Kutulu kayıtta tarih, saat ve kişi sayısı da yazılır.")
           .font(.footnote).foregroundStyle(Theme.muted)
+      }
+
+      Card(title: "Sayım oturumları") {
+        if model.countSessions.isEmpty {
+          Text("“Kişi saymayı başlat / bitir” ile yapılan sayımlar burada listelenir.")
+            .font(.subheadline).foregroundStyle(Theme.muted)
+        }
+        ForEach(model.countSessions) { s in
+          Button { openSession = s } label: {
+            HStack(spacing: 12) {
+              Text("\(s.total)").font(.title2.weight(.heavy)).foregroundStyle(Theme.amber).frame(minWidth: 44)
+              VStack(alignment: .leading, spacing: 2) {
+                Text(s.location ?? "Konum yok").fontWeight(.semibold).foregroundStyle(Theme.text).lineLimit(1)
+                Text(Date(timeIntervalSince1970: s.start).formatted(date: .abbreviated, time: .shortened)
+                     + " · " + String(format: "%.1f dk", s.minutes))
+                  .font(.footnote).foregroundStyle(Theme.muted)
+                if !s.ppeText.isEmpty {
+                  Text(s.ppeText).font(.footnote.weight(.semibold)).foregroundStyle(Theme.amber)
+                }
+              }
+              Spacer()
+              Image(systemName: "chevron.right").font(.footnote).foregroundStyle(Theme.muted)
+            }
+            .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          if s.id != model.countSessions.last?.id { Divider().overlay(Theme.line) }
+        }
       }
 
       Card(title: "Sayılan kişiler") {
@@ -542,6 +579,33 @@ struct RecordingsView: View {
           if f.id != model.recordings.last?.id { Divider().overlay(Theme.line) }
         }
       }
+    }
+    .sheet(item: $openSession) { s in
+      ScrollView {
+        VStack(alignment: .leading, spacing: 12) {
+          Text("\(s.total) kişi").font(.largeTitle.weight(.heavy)).foregroundStyle(Theme.text)
+          Text([s.location, Date(timeIntervalSince1970: s.start).formatted(date: .abbreviated, time: .shortened),
+                String(format: "%.1f dk", s.minutes)].compactMap { $0 }.joined(separator: " · "))
+            .font(.subheadline).foregroundStyle(Theme.muted)
+          if !s.ppeText.isEmpty { Text(s.ppeText).font(.headline).foregroundStyle(Theme.amber) }
+          LazyVGrid(columns: [GridItem(.adaptive(minimum: 90), spacing: 10)], spacing: 10) {
+            ForEach(s.faces) { f in
+              VStack(spacing: 4) {
+                AsyncImage(url: model.httpURL("/faces/" + f.file)) { $0.resizable().scaledToFill() } placeholder: { Theme.raised }
+                  .frame(width: 90, height: 90)
+                  .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                Text("Kişi \(f.id)").font(.caption).foregroundStyle(Theme.muted)
+              }
+            }
+          }
+          if s.faces.isEmpty {
+            Text("Bu sayımda yüzü görülen kişi yok.").font(.subheadline).foregroundStyle(Theme.muted)
+          }
+        }
+        .padding(16)
+      }
+      .background(Theme.ink)
+      .presentationDragIndicator(.visible)
     }
     .sheet(item: $playing) { f in
       if let url = model.recordingURL(f) {

@@ -62,6 +62,8 @@
 	<string>Meta gözlüğe bağlanmak için gerekli.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>Meta gözlüğe bağlanmak için gerekli.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Kişi sayım oturumuna, sayımın yapıldığı yerin adını eklemek için.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Sesli komutlar (örn. "yapay zekâ katmanını çalıştır", "Claude, …") için gözlük mikrofonu dinlenir.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

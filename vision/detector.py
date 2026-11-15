@@ -516,6 +516,9 @@ def run(args: argparse.Namespace) -> None:
         gsend({"type": "announce", "text": text})
 
     itm = ITMode(gsend, gsay)
+    from sessions import CountSessions
+
+    sessions = CountSessions()
     still = StabilityWatcher()
     pending = {"capture": 0.0}  # telefondan foto beklenen an
 
@@ -636,6 +639,40 @@ def run(args: argparse.Namespace) -> None:
                                 else:
                                     img, src = it_image(cmd)
                                     itm.error(img, src, cmd.get("text", ""))
+                            elif t == "count_start":  # kisi sayim oturumu
+                                if sessions.active:
+                                    say("Sayım zaten sürüyor.")
+                                else:
+                                    turned = not state["ai"]
+                                    state["ai"] = True
+                                    det.set_models({"ppe": True, "faces": True})
+                                    ppe_req = [k for k in cmd.get("ppe", []) if k in PPE_ITEMS]
+                                    if ppe_req:  # "maskeli kisileri de say" -> bu sayimda maske takibi
+                                        det.set_required(sorted(set(det.required) | set(ppe_req)))
+                                        if "hairnet" in ppe_req:
+                                            det.set_models({"hairnet": True})
+                                        send(det.ppe_config())
+                                    det.reset()
+                                    sessions.start(cmd.get("location"), cmd.get("lat"), cmd.get("lon"), turned)
+                                    where = f" Konum: {cmd['location']}." if cmd.get("location") else ""
+                                    extra = ""
+                                    if ppe_req:
+                                        extra = " " + ", ".join(PPE_ITEMS[k][0].lower() for k in ppe_req).capitalize() + " durumu da sayılıyor."
+                                    say("Kişi sayımı başladı." + extra + where)
+                                    send(det.models_config())
+                                    send_state()
+                                send(sessions.state())
+                            elif t == "count_stop":
+                                s_ = sessions.stop(det, PPE_ITEMS)
+                                if s_ is None:
+                                    say("Süren bir sayım yok.")
+                                else:
+                                    say(sessions.summary_text(s_))
+                                    if s_.get("turned_ai_on"):
+                                        state["ai"] = False
+                                        send_state()
+                                    send(sessions.history())
+                                send(sessions.state())
                             elif t == "ecg":  # EKG yorumu (gozluk fotografi / canli kare)
                                 img, src = it_image(cmd)
                                 itm.ecg(img, src)
@@ -649,6 +686,8 @@ def run(args: argparse.Namespace) -> None:
                                 if "speak" in cmd:
                                     det.vehicles.speak = bool(cmd["speak"])
                                 send(det.vehicles.history())
+                                send(sessions.state())
+                                send(sessions.history())
                             elif t == "it_history":
                                 send(itm.history())
                             elif t == "hello":
@@ -678,7 +717,10 @@ def run(args: argparse.Namespace) -> None:
                     else:  # katman kapali: analiz yok, sadece (varsa) kayit
                         result, announcements = {"type": "detections", "boxes": [], "counts": None, "ai_off": True}, []
                     result["latency_ms"] = round((time.time() - t) * 1000)
-                    result["seq"] = seq  # telefon bu kareyi kutularla birlikte gosterir (kayma olmaz)
+                    result["seq"] = seq
+                    if sessions.active:
+                        result["count_session"] = {"since": sessions.current["start"],
+                                                   "location": sessions.current.get("location")}  # telefon bu kareyi kutularla birlikte gosterir (kayma olmaz)
                     n += 1
                     if time.time() - t0 >= 1:
                         result["fps"] = round(n / (time.time() - t0), 1)

@@ -14,7 +14,8 @@ import Speech
 ///   "bilgisayarimdaki hata ne"                      -> .itError(pc: true)   bu PC'nin ekrani
 enum VoiceCommand: Equatable {
   case aiOn, aiOff, recordStart, recordStop
-  case itOn, itOff, itScan, ecg
+  case itOn, itOff, itScan, ecg, countStop
+  case countStart(ppe: [String])
   case itError(pc: Bool, text: String)
   case ask(String)
 }
@@ -143,6 +144,32 @@ final class VoiceCommands: NSObject {
     onHeard?(raw)
     let t = Self.normalize(raw)
     let words = t.split(whereSeparator: { $0 == " " }).count
+
+    // 0a) Kisi sayimi: "kisi saymayi baslat (maskeli kisileri de say)" / "kisi saymayi bitir"
+    if words <= 12 {
+      let tk = t.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+      let countWord = tk.contains(where: { $0.hasPrefix("saym") || $0.hasPrefix("sayim") || $0 == "say" })
+      let person = tk.contains(where: { $0.hasPrefix("kisi") || $0.hasPrefix("insan") })
+      if countWord && (person || t.contains("sayim")) {
+        let stop = ["bitir", "kapat", "durdur", "sonlandir"].contains { t.contains($0) }
+        if stop {
+          fire(.countStop, raw)
+        } else {
+          // Cumlede gecen ekipmanlar bu sayimda takip edilir (maskeli, baretli...)
+          let map: [(String, String)] = [("mask", "face-mask"), ("baret", "helmet"), ("yelek", "safety-vest"),
+                                         ("eldiven", "gloves"), ("gozluk", "glasses"), ("bone", "hairnet"),
+                                         ("kulaklik", "ear-mufs")]
+          let ppe = map.filter { k, _ in tk.contains(where: { $0.hasPrefix(k) }) }.map { $0.1 }
+          // Cumle bitince gonder ki "maskelileri de say" kismi da yakalansin
+          askBuffer = nil
+          silenceTimer?.invalidate()
+          silenceTimer = Timer.scheduledTimer(withTimeInterval: isFinal ? 0.05 : 1.0, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.fire(.countStart(ppe: ppe), raw) }
+          }
+        }
+        return
+      }
+    }
 
     // 0) Bilgi islem komutlari (en fazla 8 kelime)
     if words <= 8 {

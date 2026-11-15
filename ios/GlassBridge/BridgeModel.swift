@@ -658,6 +658,14 @@ final class BridgeModel {
                        color: v["color"] as? String, plate: v["plate"] as? String, image: v["image"] as? String)
         }
       }
+    case "count_state":
+      countActive = obj["active"] as? Bool ?? false
+      countSince = obj["start"] as? Double
+      countLocation = obj["location"] as? String
+    case "sessions":
+      if let items = obj["items"] as? [[String: Any]] {
+        countSessions = items.map { CountSession($0) }
+      }
     case "faces_list":
       if let items = obj["items"] as? [[String: Any]] {
         faces = items.compactMap { f in
@@ -749,6 +757,10 @@ final class BridgeModel {
       itError(pc: pc, text: text)
     case .ecg:
       sendECG()
+    case .countStart(let ppe):
+      startCount(ppe: ppe)
+    case .countStop:
+      stopCount()
     case .ask(let question):
       let stop = ["sus", "dur", "yeter", "kes"].contains(VoiceCommands.normalize(question))
       if stop {
@@ -805,6 +817,61 @@ final class BridgeModel {
     let size = CGSize(width: s.width * k, height: s.height * k)
     let out = UIGraphicsImageRenderer(size: size).image { _ in img.draw(in: CGRect(origin: .zero, size: size)) }
     return out.jpegData(compressionQuality: 0.85)
+  }
+
+  // MARK: - Kisi sayim oturumlari
+
+  struct CountSession: Identifiable {
+    let id: String
+    let start: Double
+    let minutes: Double
+    let total: Int
+    let location: String?
+    let ppeText: String
+    let faces: [FaceItem]
+
+    init(_ o: [String: Any]) {
+      start = o["start"] as? Double ?? 0
+      id = (o["day"] as? String ?? "") + "-" + (o["id"] as? String ?? UUID().uuidString)
+      minutes = o["minutes"] as? Double ?? 0
+      total = o["total"] as? Int ?? 0
+      location = o["location"] as? String
+      let ppe = o["ppe"] as? [[String: Any]] ?? []
+      ppeText = ppe.compactMap { p -> String? in
+        guard let name = p["name"] as? String else { return nil }
+        let ok = p["ok"] as? Int ?? 0
+        let miss = p["missing"] as? Int ?? 0
+        return "\(name): \(ok) var, \(miss) eksik"
+      }.joined(separator: " · ")
+      faces = (o["faces"] as? [[String: Any]] ?? []).compactMap { f in
+        guard let id = f["id"] as? Int, let file = f["file"] as? String else { return nil }
+        return FaceItem(id: id, file: file, time: 0)
+      }
+    }
+  }
+
+  var countActive = false
+  var countSince: Double?
+  var countLocation: String?
+  var countSessions: [CountSession] = []
+  @ObservationIgnored private lazy var locator = LocationHelper()
+
+  /// "Kisi saymayi baslat": konumu al, PC'de oturumu ac (YZ katmani + kisi/yuz modelleri acilir).
+  /// ppe: cumlede gecen ekipmanlar (or. maske) -> bu sayimda var/yok olarak sayilir.
+  func startCount(ppe: [String] = []) {
+    Task {
+      var payload: [String: Any] = ["type": "count_start", "ppe": ppe]
+      if let loc = await locator.current() {
+        payload["lat"] = loc.lat
+        payload["lon"] = loc.lon
+        if let n = loc.name { payload["location"] = n }
+      }
+      uploader.sendJSON(payload)
+    }
+  }
+
+  func stopCount() {
+    uploader.sendJSON(["type": "count_stop"])
   }
 
   // MARK: - Arac gunlugu
