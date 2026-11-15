@@ -69,9 +69,17 @@ final class BridgeModel {
     uploader.onConnectionChange = { [weak self] connected in
       Task { @MainActor in self?.socketConnected = connected }
     }
-    uploader.onAnnounce = { [weak self] text in
-      Task { @MainActor in self?.announce(text) }
+    uploader.onText = { [weak self] text in
+      Task { @MainActor in self?.handleServerMessage(text) }
     }
+
+    // Sesli komutlar: TTS konusurken dinleme duraklar (kendi sesini komut sanmasin)
+    speaker.onSpeakingChange = { [weak self] speaking in
+      self?.voice.setPaused(speaking)
+    }
+    voice.onHeard = { [weak self] text in self?.lastHeard = text }
+    voice.onStateChange = { [weak self] on in self?.voiceListening = on }
+    voice.onCommand = { [weak self] cmd, raw in self?.handleVoice(cmd, raw: raw) }
 
     Task { [weak self] in
       guard let self else { return }
@@ -193,6 +201,8 @@ final class BridgeModel {
   func stop() {
     camera?.stop()
     camera = nil
+    currentStream = nil
+    deliverPhoto(nil)
     deviceSession?.stop()
     uploader.disconnect()
     isRunning = false
@@ -245,6 +255,13 @@ final class BridgeModel {
       }
       camera = newCamera
       let stream = newCamera.stream
+      currentStream = stream
+
+      // Claude sorulari icin yuksek cozunurluklu fotograf
+      stream.photoDataPublisher.listen { [weak self] photo in
+        let data = photo.data
+        Task { @MainActor in self?.deliverPhoto(data) }
+      }.store(in: streamTokens)
       let uploader = self.uploader
       let throttle = self.previewThrottle
 
@@ -288,6 +305,119 @@ final class BridgeModel {
 
   func testSpeech() {
     speaker.say("Glass Bridge sesli bildirim testi.")
+  }
+
+  // MARK: - PC'den gelen mesajlar
+
+  var aiOn: Bool?
+  var recordingActive = false
+  var assistantText: String?
+
+  private func handleServerMessage(_ text: String) {
+    guard let data = text.data(using: .utf8),
+      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let type = obj["type"] as? String
+    else { return }
+    switch type {
+    case "announce":
+      if let say = obj["text"] as? String { announce(say) }
+    case "ai_state":
+      aiOn = obj["on"] as? Bool
+    case "recording":
+      recordingActive = obj["active"] as? Bool ?? false
+    case "assistant":
+      // Claude cevabi: {"type":"assistant","text":"...","say":"..."}; "say" varsa okunur
+      if let t = obj["text"] as? String { assistantText = t }
+      if let say = obj["say"] as? String, !say.isEmpty { announce(say) }
+    default:
+      break
+    }
+  }
+
+  // MARK: - Sesli komutlar
+
+  var voiceEnabled = false
+  var voiceListening = false
+  var lastHeard: String?
+  @ObservationIgnored private let voice = VoiceCommands()
+
+  func setVoice(_ on: Bool) {
+    voiceEnabled = on
+    if on {
+      Task {
+        if await voice.requestPermissions() {
+          voice.start()
+        } else {
+          voiceEnabled = false
+          report("Mikrofon veya konuşma tanıma izni verilmedi. Ayarlar > Glass Bridge'den aç.")
+        }
+      }
+    } else {
+      voice.stop()
+    }
+  }
+
+  private func handleVoice(_ cmd: VoiceCommand, raw: String) {
+    uploader.sendJSON(["type": "voice", "text": raw])  // web'de "duyulan" olarak gorunur
+    switch cmd {
+    case .aiOn:
+      uploader.sendJSON(["type": "ai", "on": true, "source": "voice"])
+    case .aiOff:
+      uploader.sendJSON(["type": "ai", "on": false, "source": "voice"])
+    case .recordStart:
+      uploader.sendJSON(["type": "record", "action": "start", "mode": "annotated", "source": "voice"])
+    case .recordStop:
+      uploader.sendJSON(["type": "record", "action": "stop", "source": "voice"])
+    case .ask(let question):
+      speaker.say("Bakıyorum.")
+      Task { await self.ask(question) }
+    }
+  }
+
+  /// Claude'a soru: gozlukle fotograf cek (yayin aciksa), soruyla birlikte PC'ye gonder
+  func ask(_ question: String) async {
+    var payload: [String: Any] = ["type": "ask", "text": question, "source": "voice"]
+    if let photo = await capturePhoto(), let small = Self.shrink(photo, maxSide: 1600) {
+      payload["photo"] = small.base64EncodedString()
+    }
+    uploader.sendJSON(payload)
+  }
+
+  // MARK: - Fotograf
+
+  @ObservationIgnored private var currentStream: MWDATCamera.Stream?
+  @ObservationIgnored private var photoWaiter: CheckedContinuation<Data?, Never>?
+
+  private func capturePhoto(timeout: Double = 4) async -> Data? {
+    guard let stream = currentStream, photoWaiter == nil else { return nil }
+    return await withCheckedContinuation { (cont: CheckedContinuation<Data?, Never>) in
+      photoWaiter = cont
+      if !stream.capturePhoto(format: .jpeg) {
+        deliverPhoto(nil)
+        return
+      }
+      Task { [weak self] in
+        try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+        self?.deliverPhoto(nil)
+      }
+    }
+  }
+
+  private func deliverPhoto(_ data: Data?) {
+    guard let w = photoWaiter else { return }
+    photoWaiter = nil
+    w.resume(returning: data)
+  }
+
+  /// Buyuk fotografi kucult (Claude icin 1600 px yeterli, ag yukunu azaltir)
+  static func shrink(_ data: Data, maxSide: CGFloat) -> Data? {
+    guard let img = UIImage(data: data) else { return nil }
+    let s = img.size
+    let k = min(1, maxSide / max(s.width, s.height))
+    if k >= 1 { return img.jpegData(compressionQuality: 0.85) }
+    let size = CGSize(width: s.width * k, height: s.height * k)
+    let out = UIGraphicsImageRenderer(size: size).image { _ in img.draw(in: CGRect(origin: .zero, size: size)) }
+    return out.jpegData(compressionQuality: 0.85)
   }
 
   // MARK: - Hata

@@ -42,6 +42,9 @@
   <span class="pill"><span id="visDot" class="dot"></span><span id="visTxt">Analiz: yok</span></span>
   <span class="pill" id="fps">0 FPS</span>
   <span class="pill" id="res">–</span>
+  <button id="aiBtn" title="Yapay zekâ katmanı (sesli: 'yapay zekâ katmanını çalıştır / kapat')">YZ: …</button>
+  <button id="recBtn" title="Video kaydı (sesli: 'kaydı başlat / durdur')">● Kayıt</button>
+  <span class="pill" id="recInfo"></span>
   <button id="snap">Kareyi kaydet</button>
 </header>
 <div class="layout">
@@ -104,6 +107,11 @@
       <ul id="captures" style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px"></ul>
     </div>
     <div>
+      <h2>Video kayıtları</h2>
+      <label style="font-size:13px"><input type="checkbox" id="recAnnot" checked> Kutuları kayda çiz (KKD kanıtı)</label>
+      <ul id="recList" style="list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:4px;font-size:13px"></ul>
+    </div>
+    <div>
       <h2>Anonslar</h2>
       <ul id="log"></ul>
     </div>
@@ -147,7 +155,9 @@ function drawOverlay() {
 
 function onDetections(m) {
   lastDet = m; lastDetAt = Date.now();
+  if (m.recording_s != null) recInfo.textContent = `● ${Math.floor(m.recording_s / 60)}:${String(m.recording_s % 60).padStart(2, "0")}`;
   const c = m.counts;
+  if (!c) { setDot("vis", false, "Analiz: kapalı"); drawOverlay(); return; }
   cVisible.textContent = c.visible; cTotal.textContent = c.total_people;
   renderPpeCounts(c.ppe || []);
   renderObjNow(m.objects, m.objects_ms);
@@ -237,6 +247,32 @@ function renderObjNow(objs, ms) {
   objNow.textContent = e.length ? "Şu an: " + e.map(([k, v]) => (v > 1 ? `${k} ×${v}` : k)).join(", ") + (ms ? ` · ${ms} ms` : "") : "";
 }
 
+// ---- Yapay zeka katmani + kayit ----
+let aiOn = true, recActive = false;
+function sendCmd(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+aiBtn.onclick = () => sendCmd({ type: "ai", on: !aiOn });
+recBtn.onclick = () => sendCmd(recActive ? { type: "record", action: "stop" }
+  : { type: "record", action: "start", mode: recAnnot.checked ? "annotated" : "raw" });
+function onAiState(m) {
+  aiOn = m.on;
+  aiBtn.textContent = aiOn ? "YZ: Açık" : "YZ: Kapalı";
+  aiBtn.style.background = aiOn ? "#1f6f43" : "#2a2d32";
+}
+function onRecording(m) {
+  recActive = m.active;
+  recBtn.textContent = recActive ? "■ Durdur" : "● Kayıt";
+  recBtn.style.background = recActive ? "#8b1e1e" : "#2a2d32";
+  if (!recActive) recInfo.textContent = "";
+  recList.innerHTML = "";
+  for (const f of m.files || []) {
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = `/recordings/${encodeURIComponent(f.file)}`; a.target = "_blank";
+    a.textContent = `${f.file.replace(".mp4", "")} · ${f.mb} MB`; a.style.color = "#8ab4ff";
+    li.append(a); recList.append(li);
+  }
+}
+
 const faceEls = {};
 function onFaces(list) {
   faceWrap.style.display = "block";
@@ -304,6 +340,9 @@ function connect() {
       else if (m.type === "watchlist") { watchlist = m.plates; renderWatch(); }
       else if (m.type === "ppe") onPpeConfig(m);
       else if (m.type === "objects_cfg") onObjCfg(m);
+      else if (m.type === "ai_state") onAiState(m);
+      else if (m.type === "recording") onRecording(m);
+      else if (m.type === "voice") onAnnounce(`🎤 "${m.text}"`);
       else if (m.type === "announce") onAnnounce(m.text);
       return;
     }

@@ -16,9 +16,13 @@ const PORT = Number(process.env.PORT) || 8000;
 const PUBLIC_DIR = path.join(__dirname, "public");
 const CAPTURES_DIR = path.join(__dirname, "vision", "captures");
 const FACES_DIR = path.join(__dirname, "vision", "faces");
+const REC_DIR = path.join(__dirname, "vision", "recordings");
+// URL oneki -> klasor
+const DIRS = { "/captures/": CAPTURES_DIR, "/faces/": FACES_DIR, "/recordings/": REC_DIR };
 
 const MIME = {
   ".jpg": "image/jpeg",
+  ".mp4": "video/mp4",
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -26,21 +30,34 @@ const MIME = {
 
 const server = http.createServer((req, res) => {
   const urlPath = decodeURIComponent(req.url.split("?")[0]);
-  // /captures/... -> vision/captures (aranan plaka yakalamalari)
-  const baseDir = urlPath.startsWith("/captures/") ? CAPTURES_DIR : urlPath.startsWith("/faces/") ? FACES_DIR : PUBLIC_DIR;
-  const file = urlPath === "/" ? "index.html" : urlPath.replace(/^\/((captures|faces)\/)?/, "");
+  const prefix = Object.keys(DIRS).find((p) => urlPath.startsWith(p));
+  const baseDir = prefix ? DIRS[prefix] : PUBLIC_DIR;
+  const file = urlPath === "/" ? "index.html" : urlPath.slice(prefix ? prefix.length : 1);
   const full = path.normalize(path.join(baseDir, file));
   if (!full.startsWith(baseDir)) {
     res.writeHead(403).end();
     return;
   }
-  fs.readFile(full, (err, data) => {
-    if (err) {
+  fs.stat(full, (err, st) => {
+    if (err || !st.isFile()) {
       res.writeHead(404).end("Bulunamadi");
       return;
     }
-    res.writeHead(200, { "Content-Type": MIME[path.extname(full)] || "application/octet-stream" });
-    res.end(data);
+    const type = MIME[path.extname(full)] || "application/octet-stream";
+    // Video ileri/geri sarma icin Range destegi
+    const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range || "");
+    if (m) {
+      const start = m[1] ? Number(m[1]) : 0;
+      const end = m[2] ? Number(m[2]) : st.size - 1;
+      res.writeHead(206, {
+        "Content-Type": type, "Accept-Ranges": "bytes",
+        "Content-Range": `bytes ${start}-${end}/${st.size}`, "Content-Length": end - start + 1,
+      });
+      fs.createReadStream(full, { start, end }).pipe(res);
+    } else {
+      res.writeHead(200, { "Content-Type": type, "Content-Length": st.size, "Accept-Ranges": "bytes" });
+      fs.createReadStream(full).pipe(res);
+    }
   });
 });
 
@@ -71,7 +88,14 @@ ingestWss.on("connection", (ws, req) => {
   broadcastStatus();
 
   ws.on("message", (data, isBinary) => {
-    if (!isBinary) return; // ileride metadata (JSON) icin kullanilabilir
+    if (!isBinary) {
+      // Telefondan komut (sesli komut: yapay zeka ac/kapat, kayit, Claude sorusu...) -> analiz servisine
+      const text = data.toString();
+      console.log(`[telefon] ${text.slice(0, 200)}`);
+      for (const v of visionWss.clients) if (v.readyState === 1) v.send(text);
+      for (const v of viewWss.clients) if (v.readyState === 1) v.send(text); // web'de de goster
+      return;
+    }
     stats.frames++;
     stats.lastFrameAt = Date.now();
     stats.lastSize = data.length;
@@ -115,8 +139,9 @@ visionWss.on("connection", (ws) => {
       return;
     }
     for (const v of viewWss.clients) if (v.readyState === 1) v.send(text);
-    if (msg.type === "announce") {
-      console.log(`[anons] ${msg.text}`);
+    // Telefona gidenler: anonslar + durum bilgisi (yapay zeka acik mi, kayit suruyor mu)
+    if (["announce", "ai_state", "recording", "assistant"].includes(msg.type)) {
+      if (msg.type === "announce") console.log(`[anons] ${msg.text}`);
       for (const phone of ingestWss.clients) if (phone.readyState === 1) phone.send(text);
     }
   });

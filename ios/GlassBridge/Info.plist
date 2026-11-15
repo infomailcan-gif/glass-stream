@@ -49,6 +49,7 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>processing</string>
+		<string>audio</string>
 		<string>bluetooth-central</string>
 		<string>bluetooth-peripheral</string>
 		<string>external-accessory</string>
@@ -61,6 +62,10 @@
 	<string>Meta gözlüğe bağlanmak için gerekli.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>Meta gözlüğe bağlanmak için gerekli.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Sesli komutlar (örn. "yapay zekâ katmanını çalıştır", "Claude, …") için gözlük mikrofonu dinlenir.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Sesli komutları anlamak için konuşma cihaz üzerinde yazıya çevrilir.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Gözlüğe Wi-Fi ile bağlanmak ve görüntüyü bilgisayarına göndermek için gerekli.</string>
 	<key>NSBonjourServices</key>

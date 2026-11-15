@@ -1,14 +1,20 @@
 import AVFoundation
 
-/// Metni Turkce seslendirir. Gozluk bagliyken iOS sesi gozluk hoparlorune yonlendirir.
+/// Metni Turkce seslendirir. Gozluk bagliyken ses gozluk hoparlorunden cikar.
+/// Konusma basladiginda/bittiginde haber verir (dinleme o sirada duraklatilir).
 @MainActor
-final class Speaker {
+final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
   private let synth = AVSpeechSynthesizer()
   private let voice = AVSpeechSynthesisVoice(language: "tr-TR")
-  private var configured = false
+  var onSpeakingChange: ((Bool) -> Void)?
+
+  override init() {
+    super.init()
+    synth.delegate = self
+  }
 
   func say(_ text: String) {
-    configureSessionIfNeeded()
+    AudioSessionManager.shared.activate()
     let u = AVSpeechUtterance(string: text)
     u.voice = voice
     u.rate = AVSpeechUtteranceDefaultSpeechRate * 1.05
@@ -19,15 +25,17 @@ final class Speaker {
     synth.stopSpeaking(at: .immediate)
   }
 
-  private func configureSessionIfNeeded() {
-    guard !configured else { return }
-    let s = AVAudioSession.sharedInstance()
-    do {
-      try s.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers, .allowBluetoothA2DP])
-      try s.setActive(true)
-      configured = true
-    } catch {
-      NSLog("[GlassBridge] ses oturumu ayarlanamadi: \(error)")
-    }
+  var isSpeaking: Bool { synth.isSpeaking }
+
+  nonisolated func speechSynthesizer(_ s: AVSpeechSynthesizer, didStart u: AVSpeechUtterance) {
+    Task { @MainActor in self.onSpeakingChange?(true) }
+  }
+
+  nonisolated func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish u: AVSpeechUtterance) {
+    Task { @MainActor in if !self.synth.isSpeaking { self.onSpeakingChange?(false) } }
+  }
+
+  nonisolated func speechSynthesizer(_ s: AVSpeechSynthesizer, didCancel u: AVSpeechUtterance) {
+    Task { @MainActor in self.onSpeakingChange?(false) }
   }
 }

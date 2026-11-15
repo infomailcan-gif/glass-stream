@@ -42,6 +42,22 @@ struct ContentView: View {
         }
 
         Section {
+          Toggle("Sesli komutları dinle", isOn: Binding(get: { model.voiceEnabled }, set: { model.setVoice($0) }))
+          LabeledContent("Yapay zekâ katmanı", value: model.aiOn == nil ? "–" : (model.aiOn! ? "Açık" : "Kapalı"))
+          LabeledContent("Video kaydı", value: model.recordingActive ? "● Kayıtta" : "Yok")
+          if let heard = model.lastHeard {
+            LabeledContent("Duyulan", value: heard)
+          }
+          if let a = model.assistantText {
+            Text(a).font(.footnote)
+          }
+        } header: {
+          Text("Sesli komutlar")
+        } footer: {
+          Text("“Yapay zekâ katmanını çalıştır / kapat”, “Kaydı başlat / durdur”, “Claude, …” (soru).")
+        }
+
+        Section {
           Toggle("Anonsları sesli oku", isOn: $model.speechEnabled)
           Button("Sesi test et") { model.testSpeech() }
           if let last = model.lastAnnouncement {

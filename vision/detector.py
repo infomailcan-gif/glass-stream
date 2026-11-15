@@ -427,7 +427,11 @@ def _box(xyxy, w: int, h: int, label: str, color: str, small: bool = False) -> d
 
 # --------------------------------------------------------------------------
 def run(args: argparse.Namespace) -> None:
+    from recorder import Recorder
+
     det = Detector(args)
+    rec = Recorder()
+    state = {"ai": args.ai_on}  # yapay zeka katmani acik mi (sesli komutla degisir)
     url = args.server
     while True:
         try:
@@ -442,7 +446,16 @@ def run(args: argparse.Namespace) -> None:
                     with send_lock:
                         ws.send(json.dumps(obj, ensure_ascii=False))
 
+                def say(text: str) -> None:
+                    print(f"[vision] anons: {text}")
+                    send({"type": "announce", "text": text})
+
+                def send_state() -> None:
+                    send({"type": "ai_state", "on": state["ai"]})
+                    send(rec.status())
+
                 def send_config() -> None:
+                    send_state()
                     send(det.ppe_config())
                     if det.objects is not None:
                         send(det.objects.config())
@@ -475,6 +488,21 @@ def run(args: argparse.Namespace) -> None:
                             elif t == "objects_set" and det.objects is not None:
                                 det.objects.configure(cmd)
                                 send_config()
+                            elif t == "ai":  # {"type":"ai","on":true/false} - web veya sesli komut
+                                on = bool(cmd.get("on"))
+                                if on != state["ai"]:
+                                    state["ai"] = on
+                                    say("Yapay zekâ katmanı çalışıyor." if on else "Yapay zekâ katmanı kapatıldı.")
+                                elif cmd.get("source") == "voice":
+                                    say("Yapay zekâ katmanı zaten açık." if on else "Yapay zekâ katmanı zaten kapalı.")
+                                send_state()
+                            elif t == "record":  # {"type":"record","action":"start"|"stop","mode":...}
+                                if cmd.get("action") == "start":
+                                    ok, msg = rec.start(cmd.get("mode", "annotated"))
+                                else:
+                                    ok, msg = rec.stop()
+                                say(msg)
+                                send_state()
                             elif t == "hello":
                                 send_config()
                     finally:
@@ -491,16 +519,28 @@ def run(args: argparse.Namespace) -> None:
                     if frame is None:
                         continue
                     t = time.time()
-                    result, announcements = det.process(frame)
+                    if state["ai"]:
+                        result, announcements = det.process(frame)
+                    else:  # katman kapali: analiz yok, sadece (varsa) kayit
+                        result, announcements = {"type": "detections", "boxes": [], "counts": None, "ai_off": True}, []
                     result["latency_ms"] = round((time.time() - t) * 1000)
                     n += 1
                     if time.time() - t0 >= 1:
                         result["fps"] = round(n / (time.time() - t0), 1)
                         n, t0 = 0, time.time()
+                        if rec.active:
+                            result["recording_s"] = int(time.time() - rec.started)
+                    c = result.get("counts") or {}
+                    footer = time.strftime("%d.%m.%Y %H:%M:%S")
+                    if c:
+                        footer += f"  |  Kişi: {c.get('total_people', 0)}" + "".join(
+                            f"  {p['name']} eksik: {p['missing']}" for p in c.get("ppe", []))
+                    rec.feed(frame, result["boxes"], footer)
                     send(result)
                     for text in announcements:
-                        print(f"[vision] anons: {text}")
-                        send({"type": "announce", "text": text})
+                        say(text)
+                if rec.active:  # baglanti koptuysa kaydi duzgun kapat
+                    rec.stop()
         except Exception as e:
             print(f"[vision] baglanti hatasi: {e!r}; 2 sn sonra tekrar")
             time.sleep(2)
@@ -509,6 +549,8 @@ def run(args: argparse.Namespace) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Glass Stream goruntu isleme servisi (ISG)")
     ap.add_argument("--server", default="ws://localhost:8000/vision")
+    ap.add_argument("--ai-off", dest="ai_on", action="store_false",
+                    help="yapay zeka katmani kapali baslasin (sesli komutla acilir)")
     ap.add_argument("--model", default="ppe_sh17m.pt", help="SH17 KKD modeli (vision/models icinde)")
     ap.add_argument("--conf", type=float, default=0.35, help="tespit esigi")
     ap.add_argument("--min-height", type=float, default=0.12, help="sayilacak kisinin min. yuksekligi (kare orani)")

@@ -92,13 +92,8 @@ final class FrameUploader: NSObject, URLSessionWebSocketDelegate, @unchecked Sen
       guard let self else { return }
       switch result {
       case .success(let message):
-        if case .string(let text) = message,
-          let data = text.data(using: .utf8),
-          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          obj["type"] as? String == "announce",
-          let say = obj["text"] as? String
-        {
-          self.onAnnounce?(say)
+        if case .string(let text) = message {
+          self.onText?(text)  // JSON: announce, ai_state, recording, assistant...
         }
         self.listen(on: t)
       case .failure:
@@ -107,8 +102,26 @@ final class FrameUploader: NSObject, URLSessionWebSocketDelegate, @unchecked Sen
     }
   }
 
-  /// PC'den gelen sesli anons metni (ana thread garanti degil).
-  var onAnnounce: (@Sendable (String) -> Void)?
+  /// PC'den gelen metin (JSON) mesajlari (ana thread garanti degil).
+  var onText: (@Sendable (String) -> Void)?
+
+  /// PC'ye komut gonder (JSON metni). Kareden bagimsiz, atlanmaz.
+  func sendText(_ text: String) {
+    lock.lock()
+    let t = task
+    lock.unlock()
+    t?.send(.string(text)) { error in
+      if let error { NSLog("[uploader] komut gonderilemedi: \(error)") }
+    }
+  }
+
+  /// Sozlugu JSON'a cevirip gonder
+  func sendJSON(_ obj: [String: Any]) {
+    guard let data = try? JSONSerialization.data(withJSONObject: obj),
+      let text = String(data: data, encoding: .utf8)
+    else { return }
+    sendText(text)
+  }
 
   private func handleDrop(of t: URLSessionWebSocketTask) {
     lock.lock()
