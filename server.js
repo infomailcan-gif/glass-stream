@@ -143,7 +143,8 @@ visionWss.on("connection", (ws) => {
     for (const v of viewWss.clients) if (v.readyState === 1) v.send(text);
     // Telefona gidenler: anonslar + durum bilgisi (yapay zeka acik mi, kayit suruyor mu)
     // detections: telefondaki "Canli" sekmesi kutulari cizer; models: modeller sekmesi
-    if (["announce", "ai_state", "recording", "assistant", "models", "detections"].includes(msg.type)) {
+    if (["announce", "ai_state", "recording", "assistant", "models", "detections",
+         "ppe", "objects_cfg", "watchlist"].includes(msg.type)) {
       if (msg.type === "announce") console.log(`[anons] ${msg.text}`);
       for (const phone of ingestWss.clients) if (phone.readyState === 1) phone.send(text);
     }

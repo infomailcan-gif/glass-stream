@@ -1,15 +1,17 @@
 import Foundation
 
 /// Kareleri PC'deki sunucuya WebSocket ile (binary JPEG) gonderir.
-/// Ayni anda yalnizca bir kare yolda olur; ag yavassa yeni kareler atlanir,
-/// boylece gecikme birikmez ve PC hep en guncel kareyi gorur.
+/// Ayni anda en fazla `maxInFlight` kare yolda olur; ag yavassa yeni kareler atlanir,
+/// boylece gecikme birikmez. (Tek kare yerine 3: yuksek gecikmeli mobil/Tailscale
+/// baglantida gidis-donus suresi kare hizini dusurmesin.)
 final class FrameUploader: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
   private let lock = NSLock()
   private var session: URLSession!
   private var task: URLSessionWebSocketTask?
   private var url: URL?
   private var wantConnected = false
-  private var inFlight = false
+  private var inFlight = 0
+  var maxInFlight = 3
   private var sentCount = 0
 
   /// Baglanti durumu degisince cagrilir (ana thread garanti degil).
@@ -35,7 +37,7 @@ final class FrameUploader: NSObject, URLSessionWebSocketDelegate, @unchecked Sen
     wantConnected = false
     let t = task
     task = nil
-    inFlight = false
+    inFlight = 0
     lock.unlock()
     t?.cancel(with: .goingAway, reason: nil)
     onConnectionChange?(false)
@@ -44,17 +46,17 @@ final class FrameUploader: NSObject, URLSessionWebSocketDelegate, @unchecked Sen
   /// Bir JPEG kare gonder. Onceki kare hala yoldaysa bu kare atlanir.
   func send(_ jpeg: Data) {
     lock.lock()
-    guard let t = task, !inFlight else {
+    guard let t = task, inFlight < maxInFlight else {
       lock.unlock()
       return
     }
-    inFlight = true
+    inFlight += 1
     lock.unlock()
 
     t.send(.data(jpeg)) { [weak self] error in
       guard let self else { return }
       self.lock.lock()
-      self.inFlight = false
+      self.inFlight = max(0, self.inFlight - 1)
       if error == nil { self.sentCount += 1 }
       self.lock.unlock()
       if error != nil { self.handleDrop(of: t) }
@@ -80,7 +82,7 @@ final class FrameUploader: NSObject, URLSessionWebSocketDelegate, @unchecked Sen
     }
     let t = session.webSocketTask(with: url)
     task = t
-    inFlight = false
+    inFlight = 0
     lock.unlock()
     t.resume()
     listen(on: t)
@@ -130,7 +132,7 @@ final class FrameUploader: NSObject, URLSessionWebSocketDelegate, @unchecked Sen
       return
     }
     task = nil
-    inFlight = false
+    inFlight = 0
     let retry = wantConnected
     lock.unlock()
     t.cancel()

@@ -25,6 +25,31 @@ enum StreamQuality: String, CaseIterable, Identifiable {
   }
 }
 
+/// JPEG sikistirma: mobil veride daha kucuk kareler = daha yuksek kare hizi
+enum JpegQuality: String, CaseIterable, Identifiable {
+  case high, balanced, saver
+  var id: String { rawValue }
+  var title: String {
+    switch self {
+    case .high: return "Yüksek"
+    case .balanced: return "Dengeli"
+    case .saver: return "Tasarruf"
+    }
+  }
+  var value: CGFloat {
+    switch self {
+    case .high: return 0.7
+    case .balanced: return 0.5
+    case .saver: return 0.32
+    }
+  }
+}
+
+/// Kare isleme thread'inden okunan ayar (yaris zararsiz: tek CGFloat)
+final class QualityBox: @unchecked Sendable {
+  var value: CGFloat = 0.5
+}
+
 /// Gozluk -> telefon -> PC kopru mantigi.
 /// 1) DeviceSession baslat  2) kamera iznini al  3) kamerayi ekle ve akisi baslat
 /// 4) her kareyi JPEG yapip FrameUploader ile PC'ye gonder.
@@ -47,6 +72,13 @@ final class BridgeModel {
     didSet { UserDefaults.standard.set(serverURL, forKey: "serverURL") }
   }
   var quality: StreamQuality = .medium
+  var jpegQuality: JpegQuality = JpegQuality(rawValue: UserDefaults.standard.string(forKey: "jpegQuality") ?? "") ?? .balanced {
+    didSet {
+      qualityBox.value = jpegQuality.value
+      UserDefaults.standard.set(jpegQuality.rawValue, forKey: "jpegQuality")
+    }
+  }
+  @ObservationIgnored let qualityBox = QualityBox()
   var frameRate: UInt = 24
   let frameRates: [UInt] = [15, 24, 30]
 
@@ -264,6 +296,8 @@ final class BridgeModel {
       }.store(in: streamTokens)
       let uploader = self.uploader
       let throttle = self.previewThrottle
+      let qbox = self.qualityBox
+      qbox.value = jpegQuality.value
 
       stream.statePublisher.listen { [weak self] state in
         Task { @MainActor in self?.streamState = state }
@@ -276,7 +310,7 @@ final class BridgeModel {
       // Her kare: JPEG'e cevir -> PC'ye gonder. Onizleme saniyede 5 kez guncellenir.
       stream.videoFramePublisher.listen { [weak self] frame in
         guard let image = frame.makeUIImage(),
-          let jpeg = image.jpegData(compressionQuality: 0.7)
+          let jpeg = image.jpegData(compressionQuality: qbox.value)
         else { return }
         uploader.send(jpeg)
         if throttle.allow() {
@@ -364,6 +398,61 @@ final class BridgeModel {
     uploader.sendJSON(["type": "models_set", "enabled": [key: on]])
   }
 
+  // MARK: - KKD, nesne listesi, plakalar (web ile ortak)
+
+  struct PPEItem: Identifiable {
+    let key: String
+    let name: String
+    var id: String { key }
+  }
+
+  var ppeItems: [PPEItem] = []
+  var ppeRequired: [String] = []
+  var objMode = "list"
+  var objItems: [String] = []
+  var objAlerts: [String] = []
+  var watchlist: [String] = []
+
+  func setPPE(_ key: String, required: Bool) {
+    var req = ppeRequired.filter { $0 != key }
+    if required { req.append(key) }
+    ppeRequired = req
+    uploader.sendJSON(["type": "ppe_set", "required": req])
+  }
+
+  func setObjMode(_ mode: String) {
+    objMode = mode
+    uploader.sendJSON(["type": "objects_set", "mode": mode])
+  }
+
+  func addObjects(_ text: String) {
+    let add = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    guard !add.isEmpty else { return }
+    var items = objItems
+    for a in add where !items.contains(a) { items.append(a) }
+    uploader.sendJSON(["type": "objects_set", "items": items])
+  }
+
+  func removeObject(_ name: String) {
+    uploader.sendJSON(["type": "objects_set", "items": objItems.filter { $0 != name },
+                       "alerts": objAlerts.filter { $0 != name }])
+  }
+
+  func toggleObjAlert(_ name: String) {
+    let alerts = objAlerts.contains(name) ? objAlerts.filter { $0 != name } : objAlerts + [name]
+    uploader.sendJSON(["type": "objects_set", "alerts": alerts])
+  }
+
+  func addPlate(_ plate: String) {
+    let p = plate.trimmingCharacters(in: .whitespaces)
+    guard !p.isEmpty else { return }
+    uploader.sendJSON(["type": "watchlist_set", "plates": watchlist + [p]])
+  }
+
+  func removePlate(_ plate: String) {
+    uploader.sendJSON(["type": "watchlist_set", "plates": watchlist.filter { $0 != plate }])
+  }
+
   /// PC'deki kayit dosyasinin adresi (ws://host:8000/ingest -> http://host:8000/recordings/...)
   func recordingURL(_ f: RecFile) -> URL? {
     guard var c = URLComponents(string: serverURL.trimmingCharacters(in: .whitespaces)) else { return nil }
@@ -400,6 +489,20 @@ final class BridgeModel {
           return RecFile(file: name, mb: f["mb"] as? Double ?? 0, time: f["time"] as? Double ?? 0)
         }
       }
+    case "ppe":
+      ppeRequired = obj["required"] as? [String] ?? []
+      if let items = obj["items"] as? [[String: Any]] {
+        ppeItems = items.compactMap { i in
+          guard let k = i["key"] as? String else { return nil }
+          return PPEItem(key: k, name: i["name"] as? String ?? k)
+        }
+      }
+    case "objects_cfg":
+      objMode = obj["mode"] as? String ?? "list"
+      objItems = obj["items"] as? [String] ?? []
+      objAlerts = obj["alerts"] as? [String] ?? []
+    case "watchlist":
+      watchlist = obj["plates"] as? [String] ?? []
     case "models":
       if let items = obj["items"] as? [[String: Any]] {
         models = items.compactMap { m in

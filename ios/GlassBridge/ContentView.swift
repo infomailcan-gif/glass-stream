@@ -299,6 +299,119 @@ struct ModelsView: View {
           .font(.footnote).foregroundStyle(Theme.muted)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
+
+      if !model.ppeItems.isEmpty {
+        Card(title: "Zorunlu KKD") {
+          FlowChips(items: model.ppeItems.map { ($0.key, $0.name) },
+                    selected: Set(model.ppeRequired)) { key, on in model.setPPE(key, required: on) }
+          Text("Seçilen ekipman eksikse gözlükten bir kez uyarı verilir.")
+            .font(.footnote).foregroundStyle(Theme.muted)
+        }
+      }
+
+      Card(title: "Nesne kütüphanesi") {
+        Picker("Mod", selection: Binding(get: { model.objMode }, set: { model.setObjMode($0) })) {
+          Text("Özel liste").tag("list")
+          Text("Geniş katalog").tag("catalog")
+        }
+        .pickerStyle(.segmented)
+        if model.objMode == "list" {
+          AddField(placeholder: "forklift, yangın tüpü, ladder") { model.addObjects($0) }
+          ForEach(model.objItems, id: \.self) { item in
+            HStack {
+              Button { model.toggleObjAlert(item) } label: {
+                Image(systemName: model.objAlerts.contains(item) ? "bell.fill" : "bell.slash")
+                  .foregroundStyle(model.objAlerts.contains(item) ? Theme.amber : Theme.muted)
+              }
+              .buttonStyle(.plain)
+              Text(item).foregroundStyle(Theme.text)
+              Spacer()
+              Button { model.removeObject(item) } label: {
+                Image(systemName: "xmark").font(.footnote).foregroundStyle(Theme.muted)
+              }
+              .buttonStyle(.plain)
+            }
+          }
+          Text("Zili açık olan nesne görülünce sesli bildirilir.")
+            .font(.footnote).foregroundStyle(Theme.muted)
+        } else {
+          Text("4.585 nesne türü yazmadan tanınır.").font(.footnote).foregroundStyle(Theme.muted)
+        }
+      }
+
+      Card(title: "Aranan plakalar") {
+        AddField(placeholder: "16 ABP 320") { model.addPlate($0) }
+        ForEach(model.watchlist, id: \.self) { p in
+          HStack {
+            Text(p).fontWeight(.semibold).foregroundStyle(Theme.text)
+            Spacer()
+            Button { model.removePlate(p) } label: {
+              Image(systemName: "xmark").font(.footnote).foregroundStyle(Theme.muted)
+            }
+            .buttonStyle(.plain)
+          }
+        }
+        Text("Yalnızca bu plakalar kaydedilir.").font(.footnote).foregroundStyle(Theme.muted)
+      }
+    }
+  }
+}
+
+/// Metin + Ekle dugmesi
+struct AddField: View {
+  var placeholder: String
+  var onAdd: (String) -> Void
+  @State private var text = ""
+
+  var body: some View {
+    HStack(spacing: 8) {
+      TextField(placeholder, text: $text)
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(Theme.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onSubmit(add)
+      Button("Ekle", action: add)
+        .fontWeight(.semibold)
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Theme.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .foregroundStyle(Theme.text)
+    }
+  }
+
+  private func add() {
+    let t = text.trimmingCharacters(in: .whitespaces)
+    guard !t.isEmpty else { return }
+    onAdd(t)
+    text = ""
+  }
+}
+
+/// Secilebilir etiketler (KKD)
+struct FlowChips: View {
+  var items: [(String, String)]
+  var selected: Set<String>
+  var onToggle: (String, Bool) -> Void
+
+  var body: some View {
+    LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], alignment: .leading, spacing: 8) {
+      ForEach(items, id: \.0) { key, name in
+        let on = selected.contains(key)
+        Button { onToggle(key, !on) } label: {
+          HStack(spacing: 6) {
+            Image(systemName: on ? "checkmark.circle.fill" : "circle")
+              .foregroundStyle(on ? Theme.amber : Theme.muted)
+            Text(name).lineLimit(1).minimumScaleFactor(0.8)
+          }
+          .font(.subheadline.weight(.medium))
+          .foregroundStyle(Theme.text)
+          .padding(.horizontal, 10).padding(.vertical, 8)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .background(on ? Theme.amber.opacity(0.12) : Theme.raised, in: Capsule())
+          .overlay(Capsule().stroke(on ? Theme.amber.opacity(0.6) : Theme.line, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+      }
     }
   }
 }
@@ -412,6 +525,17 @@ struct SettingsView: View {
           Text("Mobil veride Düşük ve 15 kare/sn önerilir.")
         }
         .disabled(model.isRunning)
+
+        Section {
+          Picker("Sıkıştırma", selection: $model.jpegQuality) {
+            ForEach(JpegQuality.allCases) { Text($0.title).tag($0) }
+          }
+          .pickerStyle(.segmented)
+        } header: {
+          Text("Görüntü kalitesi")
+        } footer: {
+          Text("Wi-Fi'da Yüksek, mobil veride Tasarruf seç. Yayın sırasında da değiştirilebilir.")
+        }
 
         Section {
           Toggle("Anonsları sesli oku", isOn: $model.speechEnabled)
