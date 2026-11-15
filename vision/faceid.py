@@ -60,11 +60,13 @@ class FaceID:
         self.det = cv2.FaceDetectorYN.create(
             str(MODELS / "face_detection_yunet_2023mar.onnx"), "", (320, 320), 0.75, 0.3, 20
         )
-        self.backend = backend if (MODELS / "arcface_r50.onnx").exists() else "sface"
-        if self.backend == "arcface":
+        rec = next((n for n in ("arcface_r100.onnx", "arcface_r50.onnx") if (MODELS / n).exists()), None)
+        self.backend = backend if rec else "sface"
+        if self.backend.startswith("arcface"):
             import onnxruntime as ort
 
-            self.sess = ort.InferenceSession(str(MODELS / "arcface_r50.onnx"), providers=["CPUExecutionProvider"])
+            self.sess = ort.InferenceSession(str(MODELS / rec), providers=["CPUExecutionProvider"])
+            self.backend = f"arcface ({rec})"
             self.inp = self.sess.get_inputs()[0].name
             self.same = 0.42  # ArcFace kosinus esigi
         else:
@@ -101,7 +103,7 @@ class FaceID:
         return f
 
     def embed(self, frame: np.ndarray, f: np.ndarray) -> np.ndarray:
-        if self.backend == "arcface":
+        if self.backend.startswith("arcface"):
             pts = f[4:14].reshape(5, 2).astype(np.float32)
             M, _ = cv2.estimateAffinePartial2D(pts, ARC_TEMPLATE, method=cv2.LMEDS)
             face = cv2.warpAffine(frame, M, (112, 112), borderValue=0.0)

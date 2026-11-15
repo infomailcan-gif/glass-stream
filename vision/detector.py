@@ -38,11 +38,11 @@ MODELS_FILE = HERE / "models.json"
 
 # Web ve mobilden acilip kapatilabilen modeller (anahtar -> ad, aciklama, varsayilan)
 MODEL_INFO: dict[str, tuple[str, str, bool]] = {
-    "ppe": ("Kişi ve KKD", "SH17-M · kişi sayımı, baret, maske, yelek…", True),
-    "faces": ("Yüz tanıma", "YuNet + ArcFace · tekrar sayımı önler, yüz kaydı", True),
+    "ppe": ("Kişi ve KKD", "SH17-X · kişi sayımı, baret, maske, yelek…", True),
+    "faces": ("Yüz tanıma", "YuNet + ArcFace R100 · tekrar sayımı önler, yüz kaydı", True),
     "objects": ("Nesne kütüphanesi", "YOLOE-L · 4.585 tür veya özel liste", True),
-    "vehicles": ("Araç tanıma", "YOLO11 · tür, renk, plaka eşleştirme, araç günlüğü", True),
-    "plates": ("Plaka okuma", "fast-alpr · tüm plakalar + aranan plaka alarmı", True),
+    "vehicles": ("Araç tanıma", "YOLO11-X · tür, renk, plaka eşleştirme, araç günlüğü", True),
+    "plates": ("Plaka okuma", "YOLOv9-S-608 + CCT · tüm plakalar + aranan plaka alarmı", True),
     "qr": ("QR / Barkod", "zxing-cpp", True),
     "hairnet": ("Bone tespiti", "YOLOE metin istemi · deneysel", False),
     "claude": ("Claude asistan", "Claude Code · sesli soru-cevap", True),
@@ -125,7 +125,7 @@ class Detector:
         self.device = 0 if torch.cuda.is_available() else "cpu"
         print(f"[vision] cihaz: {'GPU ' + torch.cuda.get_device_name(0) if self.device == 0 else 'CPU'}")
 
-        model = args.model if (MODELS / args.model).exists() else "ppe_sh17.pt"
+        model = next((m for m in (args.model, "ppe_sh17x.pt", "ppe_sh17m.pt", "ppe_sh17.pt") if (MODELS / m).exists()))
         self.model = YOLO(str(MODELS / model))
         self.names = self.model.names
         print(f"[vision] KKD modeli: {model}")
@@ -153,7 +153,7 @@ class Detector:
         if args.plates:
             from plates import PlateReader
 
-            self.plates = PlateReader(every=args.plate_every)
+            self.plates = PlateReader()
         self.reset()
 
     # ---------------- ayarlar ----------------
@@ -392,9 +392,10 @@ class Detector:
             self.vehicles.update(frame, now)
         plate_captures: list[dict] = []
         if self.plates is not None and self.enabled["plates"]:
-            pboxes, pann, plate_captures = self.plates.process(frame)
-            if vehicles_on:
-                self.vehicles.attach_plates(self.plates.last_reads)
+            self.plates.submit(frame)  # en buyuk plaka modeli ayri thread'de
+            pboxes, pann, plate_captures, preads = self.plates.poll()
+            if vehicles_on and preads:
+                self.vehicles.attach_plates(preads)
             for xyxy, label, wanted in pboxes:
                 boxes_out.append(_box(xyxy, W, H, label, "#ff4d4d" if wanted else "#c792ea", small=not wanted))
             announcements.extend(pann)
@@ -715,7 +716,7 @@ def main() -> None:
     ap.add_argument("--claude-model", default="sonnet", help="Claude Code modeli: sonnet | haiku | opus")
     ap.add_argument("--ai-on", dest="ai_on", action="store_true",
                     help="yapay zeka katmani acik baslasin (varsayilan: kapali; 'yapay zeka katmanini baslat' ile acilir)")
-    ap.add_argument("--model", default="ppe_sh17m.pt", help="SH17 KKD modeli (vision/models icinde)")
+    ap.add_argument("--model", default="ppe_sh17x.pt", help="SH17 KKD modeli (vision/models icinde)")
     ap.add_argument("--conf", type=float, default=0.35, help="tespit esigi")
     ap.add_argument("--min-height", type=float, default=0.12, help="sayilacak kisinin min. yuksekligi (kare orani)")
     ap.add_argument("--noface-frames", type=int, default=25, help="yuz gorunmeden saymak icin gereken kafa karesi")

@@ -8,6 +8,7 @@ ekranda gosterilir ama hicbir yere yazilmaz.
 from __future__ import annotations
 
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -56,11 +57,17 @@ def matches(read: str, wanted: str) -> bool:
 
 
 class PlateReader:
-    def __init__(self, every: int = 3, min_conf: float = 0.5, cooldown: float = 60.0) -> None:
-        self.alpr = ALPR(
-            detector_model="yolo-v9-t-384-license-plate-end2end",
-            ocr_model="cct-s-v2-global-model",
-        )
+    def __init__(self, every: int = 1, min_conf: float = 0.5, cooldown: float = 60.0,
+                 detector_model: str = "yolo-v9-s-608-license-plate-end2end") -> None:
+        # En buyuk plaka bulucu (s-608) + en buyuk global OCR (cct-s-v2)
+        self.alpr = ALPR(detector_model=detector_model, ocr_model="cct-s-v2-global-model")
+        self._lock = threading.Lock()
+        self._frame = None
+        self._event = threading.Event()
+        self._latest: tuple[list, list, float] = ([], [], 0.0)  # kutular, ham okumalar, zaman
+        self._pending_ann: list[str] = []
+        self._pending_caps: list[dict] = []
+        threading.Thread(target=self._loop, daemon=True).start()
         self.every = every
         self.min_conf = min_conf
         self.cooldown = cooldown
@@ -84,6 +91,43 @@ class PlateReader:
 
     def watchlist_pretty(self) -> list[str]:
         return [pretty(p) for p in self.watchlist]
+
+    # ---------------- arka plan (ana analiz dongusunu bekletmez) ----------------
+    def submit(self, frame: np.ndarray) -> None:
+        with self._lock:
+            self._frame = frame
+        self._event.set()
+
+    def poll(self, max_age: float = 0.8):
+        """Doner: (kutular, anonslar, yakalananlar, ham okumalar). Anons/yakalama bir kez verilir."""
+        with self._lock:
+            boxes, reads, at = self._latest
+            ann, caps = self._pending_ann, self._pending_caps
+            self._pending_ann, self._pending_caps = [], []
+        if time.time() - at > max_age:
+            boxes, reads = [], []
+        return boxes, ann, caps, reads
+
+    def _loop(self) -> None:
+        while True:
+            if not self._event.wait(1.0):
+                continue
+            with self._lock:
+                frame, self._frame = self._frame, None
+                self._event.clear()
+            if frame is None:
+                continue
+            try:
+                boxes, ann, caps = self.process(frame)
+                reads = list(self.last_reads)
+            except Exception as e:
+                print(f"[plaka] hata: {e!r}")
+                time.sleep(0.5)
+                continue
+            with self._lock:
+                self._latest = (boxes, reads, time.time())
+                self._pending_ann.extend(ann)
+                self._pending_caps.extend(caps)
 
     # ---------------- kare isleme ----------------
     def process(self, frame: np.ndarray) -> tuple[list[tuple[tuple[int, int, int, int], str, bool]], list[str], list[dict]]:

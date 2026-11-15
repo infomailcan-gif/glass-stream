@@ -90,7 +90,7 @@ def foreground_window_jpeg(max_side: int = 1600) -> bytes | None:
 
 
 class ITMode:
-    def __init__(self, send, say, hw_model: str = "sonnet", err_model: str = "haiku") -> None:
+    def __init__(self, send, say, hw_model: str = "opus", err_model: str = "sonnet") -> None:
         self.send = send  # JSON -> sunucu
         self.say = say  # sesli anons
         self.active = False
