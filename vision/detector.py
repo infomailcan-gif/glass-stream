@@ -94,6 +94,13 @@ class Detector:
             print(f"[vision] maske modeli yok ({mask_path.name}) - maske tespiti kapali")
 
         self.qr = cv2.QRCodeDetector()
+
+        self.plates = None
+        if args.plates:
+            from plates import PlateReader
+
+            self.plates = PlateReader(every=args.plate_every)
+            print(f"[vision] plaka okuma acik; aranan: {self.plates.watchlist_pretty() or '-'}")
         self.reset()
 
     def reset(self) -> None:
@@ -194,8 +201,17 @@ class Detector:
                     announcements.append(f"QR kod: {text}")
                 self.qr_last[text] = now
 
+        # 5) Plakalar
+        plate_captures: list[dict] = []
+        if self.plates is not None:
+            pboxes, pann, plate_captures = self.plates.process(frame)
+            for xyxy, label, wanted in pboxes:
+                boxes_out.append(_box(xyxy, w, h, label, "#ff4d4d" if wanted else "#c792ea"))
+            announcements.extend(pann)
+
         visible = len(tracks)
         result = {
+            "plate_captures": plate_captures,
             "type": "detections",
             "boxes": boxes_out,
             "counts": {
@@ -230,6 +246,12 @@ def run(args: argparse.Namespace) -> None:
                 latest = LatestFrame()
                 stop = threading.Event()
 
+                def send_watchlist() -> None:
+                    if det.plates is not None:
+                        ws.send(json.dumps({"type": "watchlist", "plates": det.plates.watchlist_pretty()}, ensure_ascii=False))
+
+                send_watchlist()
+
                 def receiver() -> None:
                     try:
                         for msg in ws:
@@ -243,6 +265,12 @@ def run(args: argparse.Namespace) -> None:
                                 if cmd.get("type") == "reset":
                                     det.reset()
                                     print("[vision] sayaclar sifirlandi")
+                                elif cmd.get("type") == "watchlist_set" and det.plates is not None:
+                                    det.plates.set_watchlist(cmd.get("plates", []))
+                                    print(f"[vision] aranan plakalar: {det.plates.watchlist_pretty()}")
+                                    send_watchlist()
+                                elif cmd.get("type") == "hello":
+                                    send_watchlist()
                     finally:
                         stop.set()
 
@@ -282,6 +310,8 @@ def main() -> None:
     ap.add_argument("--min-frames", type=int, default=5, help="kisiyi saymak icin gereken kare")
     ap.add_argument("--mask-votes", type=int, default=3, help="maske durumunu kesinlestirmek icin gereken kare")
     ap.add_argument("--qr-cooldown", type=float, default=15.0, help="ayni QR'i tekrar okumadan once bekleme (sn)")
+    ap.add_argument("--no-plates", dest="plates", action="store_false", help="plaka okumayi kapat")
+    ap.add_argument("--plate-every", type=int, default=3, help="plaka okumayi kac karede bir yap")
     run(ap.parse_args())
 
 

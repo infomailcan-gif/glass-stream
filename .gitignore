@@ -8,3 +8,4 @@ ios/*.xcodeproj/
 vision/models/
 vision/captures/
 __pycache__/
+vision/watchlist.txt

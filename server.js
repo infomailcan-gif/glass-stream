@@ -14,18 +14,22 @@ const { WebSocketServer } = require("ws");
 
 const PORT = Number(process.env.PORT) || 8000;
 const PUBLIC_DIR = path.join(__dirname, "public");
+const CAPTURES_DIR = path.join(__dirname, "vision", "captures");
 
 const MIME = {
+  ".jpg": "image/jpeg",
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
 };
 
 const server = http.createServer((req, res) => {
-  const urlPath = req.url.split("?")[0];
-  const file = urlPath === "/" ? "index.html" : urlPath.slice(1);
-  const full = path.normalize(path.join(PUBLIC_DIR, file));
-  if (!full.startsWith(PUBLIC_DIR)) {
+  const urlPath = decodeURIComponent(req.url.split("?")[0]);
+  // /captures/... -> vision/captures (aranan plaka yakalamalari)
+  const baseDir = urlPath.startsWith("/captures/") ? CAPTURES_DIR : PUBLIC_DIR;
+  const file = urlPath === "/" ? "index.html" : urlPath.replace(/^\/(captures\/)?/, "");
+  const full = path.normalize(path.join(baseDir, file));
+  if (!full.startsWith(baseDir)) {
     res.writeHead(403).end();
     return;
   }

@@ -65,6 +65,20 @@
       <button id="reset" style="margin-top:8px">Sayaçları sıfırla</button>
     </div>
     <div>
+      <h2>Aranan plakalar</h2>
+      <form id="plateForm" style="display:flex;gap:6px">
+        <input id="plateInput" placeholder="16 ABP 320" autocomplete="off"
+          style="flex:1;min-width:0;background:#202328;color:var(--fg);border:1px solid #333;border-radius:6px;padding:6px 8px">
+        <button>Ekle</button>
+      </form>
+      <ul id="watch" style="list-style:none;margin:8px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px"></ul>
+      <p style="color:var(--muted);font-size:12px;margin:6px 0 0">Sadece bu plakalar kaydedilir; diğerleri yalnızca ekranda gösterilir.</p>
+    </div>
+    <div id="capWrap" style="display:none">
+      <h2>Yakalanan plakalar</h2>
+      <ul id="captures" style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px"></ul>
+    </div>
+    <div>
       <h2>Anonslar</h2>
       <ul id="log"></ul>
     </div>
@@ -120,16 +134,54 @@ function onAnnounce(text) {
   while (log.children.length > 30) log.lastChild.remove();
 }
 
+let watchlist = [];
+function renderWatch() {
+  watch.innerHTML = "";
+  for (const p of watchlist) {
+    const li = document.createElement("li");
+    li.style.cssText = "background:#3a2020;border-radius:6px;padding:4px 8px;display:flex;gap:6px;align-items:center;font-weight:600";
+    li.append(p);
+    const x = document.createElement("button");
+    x.textContent = "×"; x.title = "Kaldır"; x.style.cssText = "padding:0 6px";
+    x.onclick = () => sendWatch(watchlist.filter((q) => q !== p));
+    li.append(x);
+    watch.append(li);
+  }
+}
+function sendWatch(list) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "watchlist_set", plates: list }));
+}
+plateForm.onsubmit = (e) => {
+  e.preventDefault();
+  const v = plateInput.value.trim();
+  if (v) sendWatch([...watchlist, v]);
+  plateInput.value = "";
+};
+function onCaptures(list) {
+  for (const c of list) {
+    capWrap.style.display = "block";
+    const li = document.createElement("li");
+    li.style.cssText = "background:#202328;border-radius:6px;padding:6px";
+    li.innerHTML = `<b style="color:var(--bad)"></b> <span style="color:var(--muted);font-size:12px"></span>
+      <a target="_blank"><img style="width:100%;border-radius:4px;margin-top:4px"></a>`;
+    li.querySelector("b").textContent = c.plate;
+    li.querySelector("span").textContent = `${new Date(c.time * 1000).toLocaleTimeString()} · okunan: ${c.read}`;
+    li.querySelector("a").href = li.querySelector("img").src = `/captures/${encodeURIComponent(c.file)}`;
+    captures.prepend(li);
+  }
+}
+
 function connect() {
   ws = new WebSocket(`ws://${location.host}/view`);
   ws.binaryType = "blob";
-  ws.onopen = () => setDot("srv", true, "Sunucu: bağlı");
+  ws.onopen = () => { setDot("srv", true, "Sunucu: bağlı"); ws.send(JSON.stringify({ type: "hello" })); };
   ws.onclose = () => { setDot("srv", false, "Sunucu: kopuk"); setTimeout(connect, 1000); };
   ws.onmessage = (ev) => {
     if (typeof ev.data === "string") {
       const m = JSON.parse(ev.data);
       if (m.type === "status") setDot("src", m.sources > 0, m.sources > 0 ? "Gözlük: yayında" : "Gözlük: yok");
-      else if (m.type === "detections") onDetections(m);
+      else if (m.type === "detections") { onDetections(m); if (m.plate_captures?.length) onCaptures(m.plate_captures); }
+      else if (m.type === "watchlist") { watchlist = m.plates; renderWatch(); }
       else if (m.type === "announce") onAnnounce(m.text);
       return;
     }
