@@ -207,6 +207,16 @@ final class BridgeModel {
         self.hasDevice = deviceId != nil
       }
     }
+    // Telefonda okunan QR: aninda soyle, PC'ye kaydet (envanter karti PC'den gelir)
+    qrReader.onCode = { [weak self] text in
+      Task { @MainActor in
+        guard let self else { return }
+        self.itQR = (text, nil)
+        self.announce("QR: \(text)")
+        self.uploader.sendJSON(["type": "qr", "text": text])
+      }
+    }
+
     // Wi-Fi / mobil veri algilama (Otomatik profil icin)
     pathMonitor.pathUpdateHandler = { [weak self] path in
       let wifi = path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
@@ -394,6 +404,7 @@ final class BridgeModel {
       let qbox = self.qualityBox
       qbox.value = jpegQuality.value
       let fbuf = self.frameBuffer
+      let qr = self.qrReader
 
       stream.statePublisher.listen { [weak self] state in
         Task { @MainActor in self?.streamState = state }
@@ -409,6 +420,7 @@ final class BridgeModel {
           let jpeg = image.jpegData(compressionQuality: qbox.value)
         else { return }
         if let n = uploader.send(jpeg) { fbuf.put(n, jpeg) }
+        qr.process(image)  // QR telefonda, aninda
         if throttle.allow() {
           Task { @MainActor in self?.preview = image }
         }
@@ -623,6 +635,22 @@ final class BridgeModel {
       objAlerts = obj["alerts"] as? [String] ?? []
     case "watchlist":
       watchlist = obj["plates"] as? [String] ?? []
+    case "it_state":
+      itActive = obj["active"] as? Bool ?? false
+    case "it_event":
+      guard let id = obj["id"] as? String else { break }
+      if obj["event"] as? String == "start" {
+        itCurrent = ITRecord(obj)
+      } else if itCurrent?.id == id {
+        itCurrent?.update(obj)
+      }
+    case "it_list":
+      if let items = obj["items"] as? [[String: Any]] { itHistory = items.map { ITRecord($0) } }
+    case "it_capture_request":
+      // Bilgi islem: goruntu sabitlendi -> yuksek cozunurluklu foto cek, taramaya yolla
+      Task { await self.sendITScan() }
+    case "it_qr":
+      itQR = (obj["text"] as? String ?? "", obj["item"] as? [String: Any])
     case "faces_list":
       if let items = obj["items"] as? [[String: Any]] {
         faces = items.compactMap { f in
@@ -703,6 +731,15 @@ final class BridgeModel {
       uploader.sendJSON(["type": "record", "action": "start", "mode": "annotated", "source": "voice"])
     case .recordStop:
       uploader.sendJSON(["type": "record", "action": "stop", "source": "voice"])
+    case .itOn:
+      uploader.sendJSON(["type": "it_mode", "on": true])
+    case .itOff:
+      uploader.sendJSON(["type": "it_mode", "on": false])
+    case .itScan:
+      speaker.say("Tarıyorum.")
+      Task { await self.sendITScan() }
+    case .itError(let pc, let text):
+      itError(pc: pc, text: text)
     case .ask(let question):
       let stop = ["sus", "dur", "yeter", "kes"].contains(VoiceCommands.normalize(question))
       if stop {
@@ -759,6 +796,81 @@ final class BridgeModel {
     let size = CGSize(width: s.width * k, height: s.height * k)
     let out = UIGraphicsImageRenderer(size: size).image { _ in img.draw(in: CGRect(origin: .zero, size: size)) }
     return out.jpegData(compressionQuality: 0.85)
+  }
+
+  // MARK: - Bilgi islem
+
+  struct ITRecord: Identifiable {
+    var id: String
+    var kind: String  // "hw" | "error"
+    var time: Double
+    var image: String
+    var source: String
+    var qr: String?
+    var summary: String
+    var text: String
+    var seconds: Double?
+    var done: Bool
+
+    init(_ o: [String: Any]) {
+      id = o["id"] as? String ?? UUID().uuidString
+      kind = o["kind"] as? String ?? "hw"
+      time = o["time"] as? Double ?? Date().timeIntervalSince1970
+      image = o["image"] as? String ?? ""
+      source = o["source"] as? String ?? ""
+      qr = o["qr"] as? String
+      summary = o["summary"] as? String ?? ""
+      text = o["text"] as? String ?? ""
+      seconds = o["seconds"] as? Double
+      done = (o["event"] as? String).map { $0 == "done" } ?? true
+    }
+
+    mutating func update(_ o: [String: Any]) {
+      if let t = o["text"] as? String { text = t }
+      if let s = o["summary"] as? String, !s.isEmpty { summary = s }
+      if let s = o["seconds"] as? Double { seconds = s }
+      if o["event"] as? String == "done" { done = true }
+    }
+
+    /// Ozet satiri haric ayrinti metni
+    var body: String {
+      text.replacingOccurrences(of: #"^\s*ÖZET:[^\n]*\n?"#, with: "", options: .regularExpression)
+    }
+  }
+
+  var itActive = false
+  var itCurrent: ITRecord?
+  var itHistory: [ITRecord] = []
+  var itQR: (String, [String: Any]?)?
+  @ObservationIgnored let qrReader = QRReader()
+
+  func setIT(_ on: Bool) {
+    uploader.sendJSON(["type": "it_mode", "on": on])
+  }
+
+  /// Donanim taramasi: gozlukle yuksek cozunurluklu foto (yoksa PC canli kareyi kullanir)
+  func sendITScan() async {
+    var payload: [String: Any] = ["type": "it_scan"]
+    if let photo = await capturePhoto(), let small = Self.shrink(photo, maxSide: 1800) {
+      payload["photo"] = small.base64EncodedString()
+    }
+    uploader.sendJSON(payload)
+  }
+
+  /// "Bu hata ne": sahada gozluk fotografi; "bilgisayarimdaki" -> PC ekrani
+  func itError(pc: Bool, text: String = "") {
+    speaker.say("Hataya bakıyorum.")
+    if pc {
+      uploader.sendJSON(["type": "it_error", "pc": true, "text": text])
+      return
+    }
+    Task {
+      var payload: [String: Any] = ["type": "it_error", "text": text]
+      if let photo = await capturePhoto(), let small = Self.shrink(photo, maxSide: 1800) {
+        payload["photo"] = small.base64EncodedString()
+      }
+      uploader.sendJSON(payload)
+    }
   }
 
   // MARK: - Hata

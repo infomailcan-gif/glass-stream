@@ -15,8 +15,8 @@ struct ContentView: View {
           .tabItem { Label("Panel", systemImage: "shield.lefthalf.filled") }
         LiveView(model: model).tag(1)
           .tabItem { Label("Canlı", systemImage: "viewfinder") }
-        ModelsView(model: model).tag(2)
-          .tabItem { Label("Modeller", systemImage: "cpu") }
+        ITView(model: model).tag(2)
+          .tabItem { Label("BT", systemImage: "server.rack") }
         RecordingsView(model: model).tag(3)
           .tabItem { Label("Kayıtlar", systemImage: "film.stack") }
         SettingsView(model: model).tag(4)
@@ -46,19 +46,26 @@ struct ContentView: View {
 /// Ortak sayfa iskeleti: koyu zemin + baslik
 struct Page<Content: View>: View {
   var title: String
+  var embed = true  // baska bir NavigationStack icinden aciliyorsa false
   @ViewBuilder var content: Content
 
   var body: some View {
-    NavigationStack {
-      ScrollView {
-        VStack(spacing: 14) { content }
-          .padding(.horizontal, 16)
-          .padding(.bottom, 24)
-      }
-      .background(Theme.ink)
-      .navigationTitle(title)
-      .toolbarBackground(Theme.ink, for: .navigationBar)
+    if embed {
+      NavigationStack { scroll }
+    } else {
+      scroll
     }
+  }
+
+  private var scroll: some View {
+    ScrollView {
+      VStack(spacing: 14) { content }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 24)
+    }
+    .background(Theme.ink)
+    .navigationTitle(title)
+    .toolbarBackground(Theme.ink, for: .navigationBar)
   }
 }
 
@@ -299,7 +306,7 @@ struct ModelsView: View {
   @Bindable var model: BridgeModel
 
   var body: some View {
-    Page(title: "Modeller") {
+    Page(title: "Modeller", embed: false) {
       if model.models.isEmpty {
         Card {
           Text("Bilgisayara bağlanınca modeller burada listelenir.")
@@ -533,6 +540,16 @@ struct SettingsView: View {
   var body: some View {
     NavigationStack {
       Form {
+        Section {
+          NavigationLink {
+            ModelsView(model: model)
+          } label: {
+            Label("Yapay zekâ modelleri ve filtreler", systemImage: "cpu")
+          }
+        } footer: {
+          Text("Modelleri aç/kapat, zorunlu KKD, nesne listesi, aranan plakalar.")
+        }
+
         Section {
           LabeledContent("Meta AI kaydı", value: model.registrationText)
           LabeledContent("Gözlük", value: model.hasDevice ? "Bağlı" : "Bulunamadı")

@@ -84,7 +84,7 @@
   .panel { border-left: 1px solid var(--line); background: var(--surface); display: grid; grid-template-rows: auto 1fr; min-height: 0; }
   .tabs { display: flex; gap: 2px; padding: 10px 12px 0; border-bottom: 1px solid var(--line); }
   .tab {
-    background: none; border: 0; padding: 10px 12px; cursor: pointer; color: var(--muted); font-weight: 600; font-size: 14px;
+    background: none; border: 0; padding: 10px 9px; cursor: pointer; color: var(--muted); font-weight: 600; font-size: 14px; white-space: nowrap;
     border-bottom: 2px solid transparent; margin-bottom: -1px;
   }
   .tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--amber); }
@@ -153,6 +153,24 @@
   .seg button[aria-pressed="true"] { background: var(--raised); color: var(--text); }
   .captures img { width: 100%; border-radius: var(--radius-s); }
 
+  /* Bilgi islem kartlari */
+  .itcard { border: 1px solid var(--line); border-radius: var(--radius-m); padding: 12px; margin-top: 12px; background: var(--raised); }
+  .itcard header { display: flex; gap: 8px; align-items: baseline; margin-bottom: 8px; }
+  .itcard header b { font-weight: 700; }
+  .itcard header span { color: var(--muted); font-size: 12px; margin-left: auto; }
+  .itcard .kind { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+  .itcard .kind.hw { background: rgba(111, 168, 220, .16); color: var(--steel); }
+  .itcard .kind.error { background: rgba(229, 96, 77, .16); color: #ffb3a8; }
+  .itcard img { width: 100%; border-radius: var(--radius-s); display: block; margin-bottom: 8px; cursor: zoom-in; }
+  .itcard .sum { font-weight: 600; margin: 0 0 6px; }
+  .itcard .body { white-space: pre-wrap; font-size: 14px; color: var(--text); }
+  .itcard pre { background: var(--ink); border: 1px solid var(--line); border-radius: var(--radius-s); padding: 8px; white-space: pre-wrap; font: 13px/1.5 ui-monospace, Consolas, monospace; }
+  .itrow { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .itrow img { width: 64px; height: 64px; object-fit: cover; border-radius: var(--radius-s); flex: none; }
+  .itrow div { min-width: 0; }
+  .itrow p { margin: 2px 0 0; font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  #btn-it-on.on, #itToggle.on { background: rgba(111, 168, 220, .16); border-color: var(--steel); color: #cfe3f5; }
+
   @media (max-width: 960px) {
     body { overflow: auto; }
     .main { grid-template-columns: 1fr; }
@@ -206,6 +224,7 @@
   <aside class="panel">
     <nav class="tabs" role="tablist">
       <button class="tab" role="tab" data-pane="pClaude" aria-selected="true">Claude</button>
+      <button class="tab" role="tab" data-pane="pIT" aria-selected="false">Bilgi İşlem</button>
       <button class="tab" role="tab" data-pane="pAnalysis" aria-selected="false">Analiz</button>
       <button class="tab" role="tab" data-pane="pModels" aria-selected="false">Modeller</button>
       <button class="tab" role="tab" data-pane="pRecs" aria-selected="false">Kayıtlar</button>
@@ -220,6 +239,19 @@
         <input class="field" id="askInput" placeholder="Claude'a sor" autocomplete="off">
         <button class="btn primary">Sor</button>
       </form>
+    </section>
+
+    <section class="pane" id="pIT" role="tabpanel">
+      <div class="row" style="flex-wrap:wrap">
+        <button class="btn" id="itToggle">Modu aç</button>
+        <button class="btn" id="itScan">Tara</button>
+        <button class="btn" id="itPcErr" title="Bu bilgisayarın öndeki penceresini analiz eder">Bu bilgisayardaki hata</button>
+      </div>
+      <p class="hint">Sesli: “bilgi işlem modunu başlat”, “tara”, “bu hata ne”, “bilgisayarımdaki hata ne”. Mod açıkken cihaza bir saniye sabit bakınca kendiliğinden tarar.</p>
+      <div id="itQr" hidden></div>
+      <div id="itLive"></div>
+      <h3>Geçmiş</h3>
+      <div id="itList"><p class="hint">Henüz tarama yok.</p></div>
     </section>
 
     <section class="pane" id="pAnalysis" role="tabpanel">
@@ -450,6 +482,58 @@ function onRecording(m) {
   }
 }
 
+// ---------- Bilgi islem ----------
+let itActive = false, itCur = {};
+function itBody(text) {
+  const t = (text || "").replace(/^\s*ÖZET:.*\n?/, "");
+  return t.split(/```/).map((p, i) => i % 2 ? `<pre>${esc(p.replace(/^[a-zA-Z0-9]*\n/, ""))}</pre>` : esc(p)).join("");
+}
+function itCard(r, live) {
+  const when = new Date(r.time * 1000);
+  return `<article class="itcard">
+    <header><span class="kind ${r.kind}">${r.kind === "hw" ? "Donanım" : "Hata"}</span>
+      <b>${r.qr ? esc(r.qr) : ""}</b><span>${when.toLocaleTimeString().slice(0, 5)} · ${esc(r.source || "")}${r.seconds ? `, ${r.seconds} sn` : ""}</span></header>
+    <a href="${r.image}" target="_blank"><img alt="" src="${r.image}"></a>
+    ${r.summary ? `<p class="sum">${esc(r.summary)}</p>` : (live ? `<p class="hint">Claude inceliyor…</p>` : "")}
+    <div class="body">${itBody(r.text)}</div>
+    ${r.error ? `<p class="hint" style="color:#ffb3a8">${esc(r.error)}</p>` : ""}
+  </article>`;
+}
+function onItEvent(m) {
+  if (m.event === "start") itCur = { ...m };
+  else if (m.id === itCur.id) Object.assign(itCur, m);
+  else return;
+  $("itLive").innerHTML = itCard(itCur, m.event !== "done");
+  // Bilgi islem sekmesi acik degilse kullaniciyi oraya yonlendirmeden sadece guncelle
+}
+function onItList(m) {
+  const box = $("itList");
+  if (!m.items.length) { box.innerHTML = `<p class="hint">Henüz tarama yok.</p>`; return; }
+  box.innerHTML = "";
+  for (const r of m.items) {
+    const row = document.createElement("div"); row.className = "itrow";
+    row.innerHTML = `<img alt="" src="${r.image}"><div><b>${r.kind === "hw" ? "Donanım" : "Hata"}${r.qr ? " · " + esc(r.qr) : ""}</b>
+      <span class="hint" style="margin-left:6px">${new Date(r.time * 1000).toLocaleString().slice(0, 16)}</span><p>${esc(r.summary || "")}</p></div>`;
+    row.onclick = () => { itCur = r; $("itLive").innerHTML = itCard(r, false); $("pIT").scrollTop = 0; };
+    box.append(row);
+  }
+}
+function onItState(m) {
+  itActive = m.active;
+  $("itToggle").textContent = itActive ? "Modu kapat" : "Modu aç";
+  $("itToggle").classList.toggle("on", itActive);
+}
+function onItQr(m) {
+  const box = $("itQr"); box.hidden = false;
+  const it = m.item;
+  box.innerHTML = `<article class="itcard"><header><span class="kind hw">QR</span><b>${esc(m.text)}</b><span>${new Date().toLocaleTimeString().slice(0, 5)}</span></header>
+    ${it ? `<p class="sum">${esc(it.ad || "")}</p><p class="body">${esc([it.konum, it.ip && "IP " + it.ip, it.not].filter(Boolean).join("\n"))}</p>`
+         : `<p class="hint">Envanterde kayıt yok. vision/inventory.json dosyasına eklenebilir.</p>`}</article>`;
+}
+$("itToggle").onclick = () => send({ type: "it_mode", on: !itActive });
+$("itScan").onclick = () => send({ type: "it_scan" });
+$("itPcErr").onclick = () => send({ type: "it_error", pc: true });
+
 // ---------- Modeller ----------
 function onModels(m) {
   const box = $("models"); box.innerHTML = "";
@@ -524,6 +608,10 @@ function connect() {
         case "objects_cfg": onObjCfg(m); break;
         case "models": onModels(m); break;
         case "faces_list": onFaces(m.items.slice().reverse()); break;
+        case "it_state": onItState(m); break;
+        case "it_event": onItEvent(m); break;
+        case "it_list": onItList(m); break;
+        case "it_qr": onItQr(m); break;
         case "ai_state": onAiState(m); break;
         case "recording": onRecording(m); break;
         case "voice": onAnnounce(`Duyulan: “${m.text}”`); break;

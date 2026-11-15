@@ -17,6 +17,7 @@ Calistirma: start-vision.cmd  (veya vision/models icinden: python ../detector.py
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import threading
 import time
@@ -483,6 +484,29 @@ def run(args: argparse.Namespace) -> None:
     state = {"ai": args.ai_on, "frame": None, "seq": None}  # yapay zeka katmani acik mi; son kare (asistan icin)
     sender = {"fn": None}  # aktif baglantinin send fonksiyonu (asistan thread'i kullanir)
     assistant = Assistant(lambda obj: sender["fn"] and sender["fn"](obj), model=args.claude_model)
+
+    # Bilgi Islem modu (donanim taramasi + hata analizi)
+    from assistant import frame_jpeg
+    from itmode import ITMode, StabilityWatcher, foreground_window_jpeg
+
+    def gsend(obj: dict) -> None:
+        if sender["fn"]:
+            sender["fn"](obj)
+
+    def gsay(text: str) -> None:
+        print(f"[it] anons: {text}")
+        gsend({"type": "announce", "text": text})
+
+    itm = ITMode(gsend, gsay)
+    still = StabilityWatcher()
+    pending = {"capture": 0.0}  # telefondan foto beklenen an
+
+    def it_image(cmd: dict) -> tuple[bytes | None, str]:
+        if cmd.get("photo"):
+            return base64.b64decode(cmd["photo"]), "gözlük fotoğrafı"
+        if state["frame"] is not None:
+            return frame_jpeg(state["frame"]), "canlı görüntü"
+        return None, "yok"
     url = args.server
     while True:
         try:
@@ -579,9 +603,32 @@ def run(args: argparse.Namespace) -> None:
                                     say("Claude asistanı kapalı. Modeller bölümünden açabilirsin.")
                             elif t == "ask_cancel":
                                 assistant.cancel()
+                            elif t == "it_mode":  # {"type":"it_mode","on":true}
+                                on = bool(cmd.get("on"))
+                                itm.set_active(on)
+                                say("Bilgi işlem modu açık. Cihaza bak ya da tara de; hata için bu hata ne de." if on
+                                    else "Bilgi işlem modu kapatıldı.")
+                            elif t == "it_scan":  # donanim taramasi (telefon fotografiyla)
+                                pending["capture"] = 0.0
+                                img, src = it_image(cmd)
+                                itm.scan(img, src)
+                            elif t == "it_error":  # hata analizi; pc=true -> bu PC'nin ekrani
+                                if cmd.get("pc"):
+                                    itm.error(foreground_window_jpeg(), "bu bilgisayarın ekranı", cmd.get("text", ""))
+                                else:
+                                    img, src = it_image(cmd)
+                                    itm.error(img, src, cmd.get("text", ""))
+                            elif t == "qr":  # telefonda okunan QR (anlik)
+                                txt = str(cmd.get("text", ""))[:300]
+                                det.qr_last[txt] = time.time()  # PC ayni QR'i tekrar anons etmesin
+                                itm.on_qr(txt)
+                            elif t == "it_history":
+                                send(itm.history())
                             elif t == "hello":
                                 send_config()
                                 send(det.faces_list())
+                                send(itm.state())
+                                send(itm.history())
                     finally:
                         stop.set()
 
@@ -616,6 +663,14 @@ def run(args: argparse.Namespace) -> None:
                         footer += f"  |  Kişi: {c.get('total_people', 0)}" + "".join(
                             f"  {p['name']} eksik: {p['missing']}" for p in c.get("ppe", []))
                     rec.feed(frame, result["boxes"], footer)
+                    # Bilgi islem modu: goruntu sabitlenince telefondan yuksek cozunurluklu foto iste
+                    if itm.active and not itm.busy["hw"]:
+                        if pending["capture"] and time.time() - pending["capture"] > 2.5:
+                            pending["capture"] = 0.0  # telefon cevap vermedi: canli kareyle tara
+                            itm.scan(frame_jpeg(frame), "canlı görüntü")
+                        elif not pending["capture"] and still.update(frame):
+                            pending["capture"] = time.time()
+                            send({"type": "it_capture_request"})
                     send(result)
                     if result.get("faces"):
                         send(det.faces_list())

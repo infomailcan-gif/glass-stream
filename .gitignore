@@ -16,3 +16,6 @@ vision/recordings/
 vision/assistant_prompt.txt
 vision/models.json
 vision/catalog_names.json
+vision/it/
+vision/prompt_*.txt
+vision/inventory.json

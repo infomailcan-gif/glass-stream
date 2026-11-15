@@ -8,8 +8,14 @@ import Speech
 ///   "yapay zeka katmanini kapat / durdur"           -> .aiOff
 ///   "kaydi baslat" / "kaydi durdur"                 -> .recordStart / .recordStop
 ///   "Claude, <soru>"                                -> .ask(soru)  (susunca gonderilir)
+///   "bilgi islem modunu baslat / kapat"             -> .itOn / .itOff
+///   "tara"                                          -> .itScan (donanim taramasi)
+///   "bu hata ne" / "hatayi soyle"                   -> .itError(pc: false)  gozluk fotografi
+///   "bilgisayarimdaki hata ne"                      -> .itError(pc: true)   bu PC'nin ekrani
 enum VoiceCommand: Equatable {
   case aiOn, aiOff, recordStart, recordStop
+  case itOn, itOff, itScan
+  case itError(pc: Bool, text: String)
   case ask(String)
 }
 
@@ -137,6 +143,35 @@ final class VoiceCommands: NSObject {
     onHeard?(raw)
     let t = Self.normalize(raw)
     let words = t.split(whereSeparator: { $0 == " " }).count
+
+    // 0) Bilgi islem komutlari (en fazla 8 kelime)
+    if words <= 8 {
+      let tokens = Set(t.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+      let on = ["calistir", "ac", "baslat", "aktif"].contains { t.contains($0) }
+      let off = ["kapat", "durdur", "bitir"].contains { t.contains($0) }
+      var cmd: VoiceCommand?
+      if t.contains("bilgi islem") || t.contains("bilgiislem") {
+        if off { cmd = .itOff } else if on { cmd = .itOn }
+      } else if tokens.contains("tara") || tokens.contains("taramayi") || t.hasPrefix("tara") {
+        cmd = .itScan
+      } else if tokens.contains(where: { $0.hasPrefix("hata") }) {
+        let pc = tokens.contains(where: { $0.hasPrefix("bilgisayarim") || $0 == "benim" || $0.hasPrefix("ekranim") })
+        cmd = .itError(pc: pc, text: raw)
+      }
+      if let cmd {
+        askBuffer = nil
+        silenceTimer?.invalidate()
+        // "hata" komutunu cumle bitince gonder (devamini da yakalasin), digerleri aninda
+        if case .itError = cmd, !isFinal {
+          silenceTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.fire(cmd, raw) }
+          }
+        } else {
+          fire(cmd, raw)
+        }
+        return
+      }
+    }
 
     // 1) Kisa komutlar (uzun cumlelerde yanlis tetiklenmesin diye en fazla 6 kelime)
     if words <= 6 {
