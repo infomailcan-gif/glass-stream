@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test Gönderici</title>
+<style>
+  body { margin:0; background:#0e0f11; color:#e8e8e8; font:14px system-ui, sans-serif; padding:16px; }
+  button { background:#2a2d32; color:#e8e8e8; border:0; padding:8px 14px; border-radius:6px; cursor:pointer; margin-right:8px; }
+  video, canvas { max-width:100%; border-radius:8px; margin-top:12px; background:#000; }
+  p { color:#8a8f98; }
+</style>
+</head>
+<body>
+<h3>Test gönderici (iPhone uygulamasının yerine geçer)</h3>
+<p>Kareleri <code>/ingest</code> adresine JPEG olarak yollar. iPhone uygulaması da aynı şekilde çalışacak.</p>
+<button id="cam">PC kamerasıyla gönder</button>
+<button id="pattern">Test deseni gönder</button>
+<span id="st"></span>
+<br>
+<canvas id="c" width="640" height="480"></canvas>
+<script>
+const c = document.getElementById("c"), ctx = c.getContext("2d"), st = document.getElementById("st");
+let ws, timer;
+
+function open() {
+  return new Promise((res) => {
+    if (ws && ws.readyState === 1) return res();
+    ws = new WebSocket(`ws://${location.host}/ingest`);
+    ws.onopen = () => { st.textContent = "bağlı, gönderiliyor"; res(); };
+    ws.onclose = () => { st.textContent = "bağlantı kapandı"; clearInterval(timer); };
+  });
+}
+
+function sendFrame() {
+  c.toBlob((b) => { if (b && ws.readyState === 1 && ws.bufferedAmount < 512 * 1024) ws.send(b); }, "image/jpeg", 0.7);
+}
+
+document.getElementById("pattern").onclick = async () => {
+  await open(); clearInterval(timer);
+  let t = 0;
+  timer = setInterval(() => {
+    t++;
+    ctx.fillStyle = `hsl(${t * 3 % 360} 50% 25%)`; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.fillStyle = "#fff"; ctx.font = "bold 40px system-ui";
+    ctx.fillText("GLASS STREAM TEST", 120, 220);
+    ctx.font = "28px monospace"; ctx.fillText(new Date().toLocaleTimeString() + " #" + t, 170, 280);
+    ctx.beginPath(); ctx.arc(320 + Math.cos(t / 10) * 200, 380, 20, 0, 7); ctx.fill();
+    sendFrame();
+  }, 1000 / 30);
+};
+
+document.getElementById("cam").onclick = async () => {
+  const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+  const v = document.createElement("video"); v.srcObject = stream; v.muted = true; await v.play();
+  c.width = v.videoWidth; c.height = v.videoHeight;
+  await open(); clearInterval(timer);
+  timer = setInterval(() => { ctx.drawImage(v, 0, 0); sendFrame(); }, 1000 / 30);
+};
+</script>
+</body>
+</html>

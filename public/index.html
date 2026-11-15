@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glass Stream</title>
+<style>
+  :root { --bg:#0e0f11; --panel:#17191c; --fg:#e8e8e8; --muted:#8a8f98; --ok:#3ccf7a; --bad:#e5534b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, sans-serif; height:100vh; display:flex; flex-direction:column; }
+  header { display:flex; gap:16px; align-items:center; padding:10px 16px; background:var(--panel); flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:600; }
+  .pill { display:flex; align-items:center; gap:6px; color:var(--muted); }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--bad); }
+  .dot.on { background:var(--ok); }
+  main { flex:1; display:flex; align-items:center; justify-content:center; padding:16px; min-height:0; }
+  #frame { max-width:100%; max-height:100%; border-radius:8px; background:#000; display:none; }
+  #empty { color:var(--muted); text-align:center; }
+  button { background:#2a2d32; color:var(--fg); border:0; padding:6px 12px; border-radius:6px; cursor:pointer; margin-left:auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Glass Stream</h1>
+  <span class="pill"><span id="srvDot" class="dot"></span><span id="srvTxt">Sunucu: bağlanıyor</span></span>
+  <span class="pill"><span id="srcDot" class="dot"></span><span id="srcTxt">Gözlük: yok</span></span>
+  <span class="pill" id="fps">0 FPS</span>
+  <span class="pill" id="res">–</span>
+  <button id="snap">Kareyi kaydet</button>
+</header>
+<main>
+  <img id="frame" alt="Canlı görüntü">
+  <div id="empty">Görüntü bekleniyor…<br>iPhone uygulamasını başlat veya <a href="/sender.html" style="color:#8ab4ff">test göndericiyi</a> aç.</div>
+</main>
+<script>
+const img = document.getElementById("frame");
+const empty = document.getElementById("empty");
+let frames = 0, lastUrl = null, lastBlob = null;
+
+function setDot(id, on, txt) {
+  document.getElementById(id + "Dot").classList.toggle("on", on);
+  document.getElementById(id + "Txt").textContent = txt;
+}
+
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/view`);
+  ws.binaryType = "blob";
+  ws.onopen = () => setDot("srv", true, "Sunucu: bağlı");
+  ws.onclose = () => { setDot("srv", false, "Sunucu: kopuk"); setTimeout(connect, 1000); };
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === "string") {
+      const m = JSON.parse(ev.data);
+      if (m.type === "status") setDot("src", m.sources > 0, m.sources > 0 ? "Gözlük: yayında" : "Gözlük: yok");
+      return;
+    }
+    frames++;
+    lastBlob = ev.data;
+    const url = URL.createObjectURL(ev.data);
+    img.onload = () => {
+      if (lastUrl) URL.revokeObjectURL(lastUrl);
+      lastUrl = url;
+      document.getElementById("res").textContent = `${img.naturalWidth}×${img.naturalHeight}`;
+    };
+    img.src = url;
+    img.style.display = "block";
+    empty.style.display = "none";
+  };
+}
+connect();
+
+setInterval(() => { document.getElementById("fps").textContent = `${frames} FPS`; frames = 0; }, 1000);
+
+document.getElementById("snap").onclick = () => {
+  if (!lastBlob) return;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(lastBlob);
+  a.download = `kare-${Date.now()}.jpg`;
+  a.click();
+};
+</script>
+</body>
+</html>

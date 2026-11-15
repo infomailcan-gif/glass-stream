@@ -1,0 +1,13 @@
+{
+  "name": "glass-stream",
+  "version": "0.1.0",
+  "description": "Meta gozlukten (iPhone koprusu uzerinden) gelen kareleri tarayicida canli gosteren relay sunucusu",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

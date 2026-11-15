@@ -1,0 +1,58 @@
+# iPhone kopru uygulamasini GitHub'in Mac sunucusunda derler ve
+# imzasiz GlassBridge.ipa uretir. Bu dosyayi Windows'ta Sideloadly ile
+# kendi Apple ID'nle imzalayip iPhone'a yuklersin.
+name: Build iOS bridge
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode sec (en guncel kararli)
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: XcodeGen kur
+        run: brew install xcodegen
+
+      - name: Xcode projesini uret
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Derle (imzasiz)
+        working-directory: ios
+        run: |
+          xcodebuild \
+            -project GlassBridge.xcodeproj \
+            -scheme GlassBridge \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: IPA paketle
+        working-directory: ios
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/GlassBridge.app Payload/
+          zip -qry GlassBridge.ipa Payload
+          ls -lh GlassBridge.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GlassBridge-ipa
+          path: ios/GlassBridge.ipa
+          retention-days: 14
