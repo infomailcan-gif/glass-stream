@@ -189,9 +189,20 @@ struct LiveView: View {
     NavigationStack {
       ZStack {
         Theme.ink.ignoresSafeArea()
-        // Analiz aciksa PC'nin isledigi kare (kutularla birebir), degilse canli onizleme
-        if let img = (model.aiOn == true ? model.syncedFrame : nil) ?? model.preview {
+        // Varsayilan: telefonun anlik goruntusu + son analizin kutulari (gecikmesiz).
+        // "Kareye kilitle" aciksa PC'nin isledigi kare gosterilir (tam oturur, gecikmeli).
+        if let img = (model.aiOn == true && model.lockBoxesToFrame ? model.syncedFrame : nil) ?? model.preview {
           VStack(spacing: 12) {
+            if model.aiOn != true {
+              Button { model.toggleAI() } label: {
+                Label("Kutular için yapay zekâ katmanını aç", systemImage: "brain")
+                  .font(.subheadline.weight(.semibold))
+                  .padding(.horizontal, 14).padding(.vertical, 9)
+                  .foregroundStyle(Color(hex: 0x1A1405))
+                  .background(Theme.amber, in: Capsule())
+              }
+              .buttonStyle(.plain)
+            }
             Image(uiImage: img)
               .resizable()
               .scaledToFit()
@@ -210,6 +221,17 @@ struct LiveView: View {
             }
             .font(.footnote)
             .foregroundStyle(Theme.muted)
+
+            Toggle(isOn: $model.lockBoxesToFrame) {
+              Text("Kutuları kareye kilitle").font(.footnote).foregroundStyle(Theme.muted)
+            }
+            .tint(Theme.amber)
+            .padding(.horizontal, 24)
+            Text(model.lockBoxesToFrame
+                 ? "Kutular tam oturur, görüntü mobil veride yarım saniye kadar geriden gelir."
+                 : "Görüntü anlık; kutular son analizden gelir, hızlı harekette az kayabilir.")
+              .font(.caption).foregroundStyle(Theme.muted.opacity(0.8))
+              .multilineTextAlignment(.center).padding(.horizontal, 24)
           }
         } else {
           VStack(spacing: 12) {
@@ -535,28 +557,46 @@ struct SettingsView: View {
         }
 
         Section {
-          Picker("Çözünürlük", selection: $model.quality) {
-            ForEach(StreamQuality.allCases) { Text($0.title).tag($0) }
-          }
-          Picker("Kare hızı", selection: $model.frameRate) {
-            ForEach(model.frameRates, id: \.self) { Text("\($0) kare/sn").tag($0) }
+          ForEach(StreamProfile.allCases) { p in
+            Button { model.profile = p } label: {
+              HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                  Text(p.title).foregroundStyle(Theme.text).fontWeight(.semibold)
+                  Text(p.detail).font(.footnote).foregroundStyle(Theme.muted)
+                }
+                Spacer()
+                if model.profile == p {
+                  Image(systemName: "checkmark").foregroundStyle(Theme.amber).fontWeight(.semibold)
+                }
+              }
+              .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
           }
         } header: {
-          Text("Görüntü")
+          Text("Yayın profili")
         } footer: {
-          Text("Mobil veride Düşük ve 15 kare/sn önerilir.")
+          Text(model.profile == .auto
+               ? "Şu an \(model.onWiFi ? "Wi-Fi" : "mobil veri") algılandı. Çözünürlük değişikliği yayın yeniden başlayınca geçerli olur."
+               : "Çözünürlük ve kare hızı değişikliği yayın yeniden başlayınca geçerli olur.")
         }
-        .disabled(model.isRunning)
 
         Section {
-          Picker("Sıkıştırma", selection: $model.jpegQuality) {
+          Picker("Çözünürlük", selection: Binding(get: { model.quality }, set: { model.profile = nil; model.quality = $0 })) {
+            ForEach(StreamQuality.allCases) { Text($0.title).tag($0) }
+          }
+          .disabled(model.isRunning)
+          Picker("Kare hızı", selection: Binding(get: { model.frameRate }, set: { model.profile = nil; model.frameRate = $0 })) {
+            ForEach(model.frameRates, id: \.self) { Text("\($0) kare/sn").tag($0) }
+          }
+          .disabled(model.isRunning)
+          Picker("Sıkıştırma", selection: Binding(get: { model.jpegQuality }, set: { model.profile = nil; model.jpegQuality = $0 })) {
             ForEach(JpegQuality.allCases) { Text($0.title).tag($0) }
           }
-          .pickerStyle(.segmented)
         } header: {
-          Text("Görüntü kalitesi")
+          Text("Özel ayar")
         } footer: {
-          Text("Wi-Fi'da Yüksek, mobil veride Tasarruf seç. Yayın sırasında da değiştirilebilir.")
+          Text("Buradan değiştirirsen profil seçimi kalkar.")
         }
 
         Section {

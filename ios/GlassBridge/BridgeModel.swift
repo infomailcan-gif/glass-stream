@@ -1,6 +1,7 @@
 import Foundation
 import MWDATCamera
 import MWDATCore
+import Network
 import Observation
 import UIKit
 
@@ -41,6 +42,37 @@ enum JpegQuality: String, CaseIterable, Identifiable {
     case .high: return 0.7
     case .balanced: return 0.5
     case .saver: return 0.32
+    }
+  }
+}
+
+/// Hazir yayin profilleri. Otomatik: Wi-Fi -> Ev, mobil veri -> Mobil.
+enum StreamProfile: String, CaseIterable, Identifiable {
+  case auto, home, mobile, detail
+  var id: String { rawValue }
+  var title: String {
+    switch self {
+    case .auto: return "Otomatik"
+    case .home: return "Ev"
+    case .mobile: return "Mobil"
+    case .detail: return "Detay"
+    }
+  }
+  var detail: String {
+    switch self {
+    case .auto: return "Wi-Fi'da Ev, mobil veride Mobil"
+    case .home: return "Orta · 24 kare/sn · Dengeli"
+    case .mobile: return "Düşük · 15 kare/sn · Tasarruf"
+    case .detail: return "Yüksek · 15 kare/sn · Dengeli (plaka, QR, uzak yüz)"
+    }
+  }
+  /// (cozunurluk, kare hizi, sikistirma)
+  func settings(onWiFi: Bool) -> (StreamQuality, UInt, JpegQuality) {
+    switch self {
+    case .auto: return onWiFi ? StreamProfile.home.settings(onWiFi: true) : StreamProfile.mobile.settings(onWiFi: false)
+    case .home: return (.medium, 24, .balanced)
+    case .mobile: return (.low, 15, .saver)
+    case .detail: return (.high, 15, .balanced)
     }
   }
 }
@@ -110,6 +142,28 @@ final class BridgeModel {
   var frameRate: UInt = 24
   let frameRates: [UInt] = [15, 24, 30]
 
+  /// Secili profil (ozel ayar yapilirsa nil)
+  var profile: StreamProfile? = StreamProfile(rawValue: UserDefaults.standard.string(forKey: "profile") ?? "auto") {
+    didSet { UserDefaults.standard.set(profile?.rawValue ?? "custom", forKey: "profile"); applyProfile() }
+  }
+  var onWiFi = true
+  @ObservationIgnored private let pathMonitor = NWPathMonitor()
+
+  /// Profili cozunurluk / kare hizi / sikistirmaya uygula. Cozunurluk ve kare hizi
+  /// yayin yeniden baslayinca gecerli olur; sikistirma aninda.
+  func applyProfile() {
+    guard let p = profile else { return }
+    let (q, fps, jq) = p.settings(onWiFi: onWiFi)
+    quality = q
+    frameRate = fps
+    jpegQuality = jq
+  }
+
+  /// Canli ekranda kutulari PC'nin isledigi kareye kilitle (tam oturur ama gecikmeli)
+  var lockBoxesToFrame = UserDefaults.standard.bool(forKey: "lockBoxes") {
+    didSet { UserDefaults.standard.set(lockBoxesToFrame, forKey: "lockBoxes"); frameBuffer.enabled = liveActive && lockBoxesToFrame }
+  }
+
   // SDK nesneleri
   @ObservationIgnored private let wearables: WearablesInterface
   @ObservationIgnored private let deviceSelector: AutoDeviceSelector
@@ -153,6 +207,18 @@ final class BridgeModel {
         self.hasDevice = deviceId != nil
       }
     }
+    // Wi-Fi / mobil veri algilama (Otomatik profil icin)
+    pathMonitor.pathUpdateHandler = { [weak self] path in
+      let wifi = path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
+      Task { @MainActor in
+        guard let self, self.onWiFi != wifi else { return }
+        self.onWiFi = wifi
+        if self.profile == .auto { self.applyProfile() }
+      }
+    }
+    pathMonitor.start(queue: DispatchQueue(label: "net"))
+    applyProfile()
+
     // Gonderilen FPS sayaci
     Task { [weak self] in
       while !Task.isCancelled {
@@ -232,6 +298,7 @@ final class BridgeModel {
       return
     }
 
+    applyProfile()  // Otomatik profilde o anki aga gore cozunurluk/kare hizi
     isRunning = true
     UIApplication.shared.isIdleTimerDisabled = true  // ekran kapanmasin, yayin kesilmesin
     uploader.connect(to: url)
@@ -409,7 +476,7 @@ final class BridgeModel {
   var liveActive = false {
     didSet {
       previewThrottle.setRate(perSecond: liveActive ? 15 : 4)
-      frameBuffer.enabled = liveActive
+      frameBuffer.enabled = liveActive && lockBoxesToFrame
       if !liveActive { frameBuffer.clear(); syncedFrame = nil }
     }
   }
@@ -580,7 +647,7 @@ final class BridgeModel {
       // Kutulari yalnizca Canli sekmesi acikken coz (gereksiz is yapma)
       guard liveActive, let boxes = obj["boxes"] as? [[String: Any]] else { return }
       // Analiz edilen kareyi tampondan bul: kutu ve goruntu ayni anin
-      if let n = obj["seq"] as? Int, let data = frameBuffer.get(n), let img = UIImage(data: data) {
+      if lockBoxesToFrame, let n = obj["seq"] as? Int, let data = frameBuffer.get(n), let img = UIImage(data: data) {
         syncedFrame = img
       } else if obj["counts"] is NSNull || obj["counts"] == nil {
         syncedFrame = nil  // analiz kapali: canli onizlemeye don

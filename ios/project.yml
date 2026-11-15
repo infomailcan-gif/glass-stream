@@ -22,8 +22,8 @@ targets:
         INFOPLIST_FILE: GlassBridge/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         PRODUCT_BUNDLE_IDENTIFIER: com.glassstream.bridge
-        MARKETING_VERSION: "0.6.0"
-        CURRENT_PROJECT_VERSION: "8"
+        MARKETING_VERSION: "0.6.1"
+        CURRENT_PROJECT_VERSION: "9"
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"
         META_APP_ID: "0"
