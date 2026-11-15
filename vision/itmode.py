@@ -56,6 +56,31 @@ Gerekirse komutları ``` içinde ver.
 Okunamıyorsa söyle ve yaklaşmasını/açıyı değiştirmesini iste. Uydurma."""
 
 
+ECG_QUICK_PROMPT = """Sen bir EKG ön değerlendirme asistanısın. Türkçe yaz. Görüntüde bir EKG var.
+Kalp hızını tahmin etme, say: şeritteki QRS'leri say, süreyi büyük karelerden bul (1 büyük kare = 0,2 sn), hız = QRS / süre × 60.
+YALNIZCA tek satır yaz: "ÖZET: " ile başla, en fazla 25 kelime: ritim, yaklaşık kalp hızı ve varsa acil görünen bulgu
+(ör. ST yükselmesi, ciddi bradikardi/taşikardi, AV blok). Görüntü EKG değilse veya okunamıyorsa bunu söyle."""
+
+ECG_FULL_PROMPT = """Sen deneyimli bir EKG yorumlama asistanısın. Türkçe yaz. Görüntüdeki EKG'yi sistematik yorumla.
+Görüntü eğik/bulanık olabilir; kâğıt hızı ve kalibrasyon görünmüyorsa standart (25 mm/sn, 10 mm/mV) varsay ve bunu belirt.
+Biçim (kesin uy, her başlık kısa):
+ÖZET: (tek cümle, en önemli sonuç)
+Kalite: derivasyonlar, okunabilirlik, artefakt
+Hız: atım/dk. YÖNTEM (zorunlu): önce kâğıttaki büyük kareleri tanı (1 büyük kare = 5 küçük = 0,2 sn);
+  şeridin toplam süresini büyük kare sayısından hesapla; şeritteki TÜM QRS'leri tek tek say; hız = QRS sayısı / süre × 60.
+  Sonra iki komşu R arasındaki büyük kare sayısıyla (300 / büyük kare) kontrol et. İki sonuç uyuşmazsa ikisini de yaz ve "belirsiz" de.
+Ritim: sinüs mü, düzenli mi, P-QRS ilişkisi
+Aks: normal / sol / sağ sapma
+Aralıklar: PR, QRS, QT/QTc (yaklaşık ms)
+ST-T: yükselme/çökme ve hangi derivasyonlar (anatomik bölge), T dalgası
+Diğer: hipertrofi, dal blokları, Q dalgaları, ekstrasistoller
+Sonuç: olası tanılar (en olasıdan başla)
+ACİL: yalnızca acil bir bulgu varsa yaz (ör. STEMI şüphesi, yüksek dereceli AV blok, VT); yoksa bu satırı hiç yazma
+Öneri: sonraki adımlar
+Emin olmadığın yerde "belirsiz" de, görmediğini uydurma. En sona şu satırı ekle:
+"Bu yorum yapay zekâ ön değerlendirmesidir; kesin tanı için hekim değerlendirmesi gerekir." """
+
+
 def _stamp(t: float) -> tuple[str, str]:
     lt = time.localtime(t)
     return time.strftime("%Y%m%d", lt), time.strftime("%H%M%S", lt)
@@ -96,8 +121,12 @@ class ITMode:
         self.active = False
         self.hw = ClaudeRunner("it_hw", hw_model, HW_PROMPT, max_turns=8)
         self.err = ClaudeRunner("it_err", err_model, ERR_PROMPT, max_turns=8)
+        # EKG: Opus hizli on degerlendirme (sesli) + Fable 5.2 ayrintili yorum (yedek: Opus)
+        self.ecg_quick = ClaudeRunner("ecg_quick", "opus", ECG_QUICK_PROMPT, max_turns=4)
+        self.ecg_full = ClaudeRunner("ecg_full", "claude-fable-5-2", ECG_FULL_PROMPT, max_turns=4)
+        self.ecg_full_backup = ClaudeRunner("ecg_full_opus", "opus", ECG_FULL_PROMPT, max_turns=4)
         self.last_qr: tuple[str, float] | None = None
-        self.busy = {"hw": False, "error": False}
+        self.busy = {"hw": False, "error": False, "ecg": False}
         IT_DIR.mkdir(exist_ok=True)
         if not INVENTORY.exists():
             INVENTORY.write_text(json.dumps({
@@ -139,6 +168,9 @@ class ITMode:
     def error(self, img: bytes | None, source: str, question: str = "") -> None:
         self._start("error", img, source, question or "Bu hata ne, nasıl çözülür?")
 
+    def ecg(self, img: bytes | None, source: str) -> None:
+        self._start("ecg", img, source, "Bu EKG'yi yorumla.")
+
     def _start(self, kind: str, img: bytes | None, source: str, question: str) -> None:
         if img is None:
             self.say("Görüntü alınamadı, tekrar dene.")
@@ -149,7 +181,7 @@ class ITMode:
         self.busy[kind] = True
         now = time.time()
         day, hms = _stamp(now)
-        rid = f"{hms}-{'tarama' if kind == 'hw' else 'hata'}"
+        rid = f"{hms}-{ {'hw': 'tarama', 'error': 'hata', 'ecg': 'ekg'}[kind] }"
         folder = IT_DIR / day
         folder.mkdir(parents=True, exist_ok=True)
         (folder / f"{rid}.jpg").write_bytes(img)
@@ -157,7 +189,8 @@ class ITMode:
         rec = {"id": rid, "day": day, "kind": kind, "time": now, "source": source,
                "image": f"/it/{day}/{rid}.jpg", "qr": qr, "summary": "", "text": ""}
         self.send({"type": "it_event", "event": "start", **rec})
-        threading.Thread(target=self._run, args=(kind, img, question, rec, folder), daemon=True).start()
+        target = self._run_ecg if kind == "ecg" else self._run
+        threading.Thread(target=target, args=(kind, img, question, rec, folder), daemon=True).start()
 
     def _run(self, kind: str, img: bytes, question: str, rec: dict, folder: Path) -> None:
         runner = self.hw if kind == "hw" else self.err
@@ -194,6 +227,70 @@ class ITMode:
         if err:
             rec["error"] = err
             self.say("Analiz tamamlanamadı." if "limit" not in err.lower() else "Claude kullanım limitine ulaşıldı.")
+        (folder / f"{rec['id']}.json").write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+        self.send({"type": "it_event", "event": "done", **rec})
+        self.busy[kind] = False
+        self.send(self.history())
+
+    def _run_ecg(self, kind: str, img: bytes, question: str, rec: dict, folder: Path) -> None:
+        """Once Opus ile hizli sesli ozet, sonra Fable 5.2 ile ayrintili yorum (olmazsa Opus)."""
+        t0 = time.time()
+        b64 = base64.b64encode(img).decode()
+        content = [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+                   {"type": "text", "text": question}]
+        spoken = {"done": False}
+
+        def quick_delta(full: str) -> None:
+            if not spoken["done"]:
+                m = re.match(r"\s*ÖZET:\s*(.+?)(\n|$)", full)
+                if m and (m.group(2) or full.rstrip().endswith((".", "!"))):
+                    spoken["done"] = True
+                    rec["summary"] = m.group(1).strip()
+                    self.say("EKG ön değerlendirme: " + rec["summary"])
+                    self.send({"type": "it_event", "event": "delta", "id": rec["id"], "text": "",
+                               "summary": rec["summary"]})
+
+        # 1) Hizli on degerlendirme ve 2) ayrintili yorum ayni anda baslar
+        quick_box: dict = {}
+
+        def run_quick() -> None:
+            q, _ = self.ecg_quick.ask(content, quick_delta, timeout=60)
+            quick_box["text"] = q
+
+        tq = threading.Thread(target=run_quick, daemon=True)
+        tq.start()
+
+        last_send = [0.0]
+
+        def full_delta(full: str) -> None:
+            if time.time() - last_send[0] > 0.15:
+                last_send[0] = time.time()
+                self.send({"type": "it_event", "event": "delta", "id": rec["id"], "text": full,
+                           "summary": rec["summary"]})
+
+        full, err = self.ecg_full.ask(content, full_delta, timeout=180)
+        rec["model"] = "Claude Fable 5.2"
+        if err or not full.strip():
+            print(f"[ekg] Fable kullanilamadi ({err}); Opus ile devam")
+            full, err = self.ecg_full_backup.ask(content, full_delta, timeout=120)
+            rec["model"] = "Claude Opus 5.5"
+        tq.join(timeout=5)
+        if not spoken["done"]:
+            q = quick_box.get("text") or full
+            first = q.strip().splitlines()[0] if q.strip() else ""
+            rec["summary"] = re.sub(r"^ÖZET:\s*", "", first)[:200]
+            if rec["summary"]:
+                self.say("EKG: " + rec["summary"])
+        # Acil satiri varsa ayrica ve acikca soyle
+        m = re.search(r"^ACİL:\s*(.+)$", full, re.M)
+        if m and m.group(1).strip():
+            rec["urgent"] = m.group(1).strip()
+            self.say("Dikkat, acil bulgu: " + rec["urgent"] + ". Hemen hekime danış.")
+        rec["text"] = full
+        rec["seconds"] = round(time.time() - t0, 1)
+        if err:
+            rec["error"] = err
+            self.say("EKG yorumu tamamlanamadı.")
         (folder / f"{rec['id']}.json").write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
         self.send({"type": "it_event", "event": "done", **rec})
         self.busy[kind] = False

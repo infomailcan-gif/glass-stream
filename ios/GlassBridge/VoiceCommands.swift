@@ -14,7 +14,7 @@ import Speech
 ///   "bilgisayarimdaki hata ne"                      -> .itError(pc: true)   bu PC'nin ekrani
 enum VoiceCommand: Equatable {
   case aiOn, aiOff, recordStart, recordStop
-  case itOn, itOff, itScan
+  case itOn, itOff, itScan, ecg
   case itError(pc: Bool, text: String)
   case ask(String)
 }
@@ -150,7 +150,9 @@ final class VoiceCommands: NSObject {
       let on = ["calistir", "ac", "baslat", "aktif"].contains { t.contains($0) }
       let off = ["kapat", "durdur", "bitir"].contains { t.contains($0) }
       var cmd: VoiceCommand?
-      if t.contains("bilgi islem") || t.contains("bilgiislem") {
+      if tokens.contains(where: { $0.hasPrefix("ekg") || $0.hasPrefix("ecg") || $0.hasPrefix("elektrokardiyo") }) {
+        cmd = .ecg  // "bu EKG'yi yorumla", "EKG'ye bak"
+      } else if t.contains("bilgi islem") || t.contains("bilgiislem") {
         if off { cmd = .itOff } else if on { cmd = .itOn }
       } else if tokens.contains("tara") || tokens.contains("taramayi") || t.hasPrefix("tara") {
         cmd = .itScan

@@ -747,6 +747,8 @@ final class BridgeModel {
       Task { await self.sendITScan() }
     case .itError(let pc, let text):
       itError(pc: pc, text: text)
+    case .ecg:
+      sendECG()
     case .ask(let question):
       let stop = ["sus", "dur", "yeter", "kes"].contains(VoiceCommands.normalize(question))
       if stop {
@@ -835,6 +837,8 @@ final class BridgeModel {
     var text: String
     var seconds: Double?
     var done: Bool
+    var urgent: String?
+    var model: String?
 
     init(_ o: [String: Any]) {
       id = o["id"] as? String ?? UUID().uuidString
@@ -847,6 +851,8 @@ final class BridgeModel {
       text = o["text"] as? String ?? ""
       seconds = o["seconds"] as? Double
       done = (o["event"] as? String).map { $0 == "done" } ?? true
+      urgent = o["urgent"] as? String
+      model = o["model"] as? String
     }
 
     mutating func update(_ o: [String: Any]) {
@@ -854,11 +860,13 @@ final class BridgeModel {
       if let s = o["summary"] as? String, !s.isEmpty { summary = s }
       if let s = o["seconds"] as? Double { seconds = s }
       if o["event"] as? String == "done" { done = true }
+      if let u = o["urgent"] as? String { urgent = u }
+      if let m = o["model"] as? String { model = m }
     }
 
     /// Ozet satiri haric ayrinti metni
     var body: String {
-      text.replacingOccurrences(of: #"^\s*ÖZET:[^\n]*\n?"#, with: "", options: .regularExpression)
+      text.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: #"^\s*ÖZET:[^\n]*\n?"#, with: "", options: .regularExpression)
     }
   }
 
@@ -879,6 +887,18 @@ final class BridgeModel {
       payload["photo"] = small.base64EncodedString()
     }
     uploader.sendJSON(payload)
+  }
+
+  /// EKG: gozlukle yuksek cozunurluklu foto -> Opus hizli sesli ozet + Fable 5.2 ayrintili yorum
+  func sendECG() {
+    speaker.say("EKG'ye bakıyorum.")
+    Task {
+      var payload: [String: Any] = ["type": "ecg"]
+      if let photo = await capturePhoto(), let small = Self.shrink(photo, maxSide: 2200) {
+        payload["photo"] = small.base64EncodedString()
+      }
+      uploader.sendJSON(payload)
+    }
   }
 
   /// "Bu hata ne": sahada gozluk fotografi; "bilgisayarimdaki" -> PC ekrani

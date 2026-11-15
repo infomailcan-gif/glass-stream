@@ -161,6 +161,8 @@
   .itcard .kind { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
   .itcard .kind.hw { background: rgba(111, 168, 220, .16); color: var(--steel); }
   .itcard .kind.error { background: rgba(229, 96, 77, .16); color: #ffb3a8; }
+  .itcard .kind.ecg { background: rgba(242, 179, 61, .16); color: var(--amber); }
+  .itcard .urgent { background: rgba(229, 96, 77, .16); border: 1px solid var(--bad); color: #ffd2cb; border-radius: var(--radius-s); padding: 8px 10px; font-weight: 700; margin: 0 0 8px; }
   .itcard img { width: 100%; border-radius: var(--radius-s); display: block; margin-bottom: 8px; cursor: zoom-in; }
   .itcard .sum { font-weight: 600; margin: 0 0 6px; }
   .itcard .body { white-space: pre-wrap; font-size: 14px; color: var(--text); }
@@ -246,6 +248,7 @@
         <button class="btn" id="itToggle">Modu aç</button>
         <button class="btn" id="itScan">Tara</button>
         <button class="btn" id="itPcErr" title="Bu bilgisayarın öndeki penceresini analiz eder">Bu bilgisayardaki hata</button>
+        <button class="btn" id="itEcg" title="Gözlüğün gördüğü EKG'yi yorumlar">EKG yorumla</button>
       </div>
       <p class="hint">Sesli: “bilgi işlem modunu başlat”, “tara”, “bu hata ne”, “bilgisayarımdaki hata ne”. Mod açıkken cihaza bir saniye sabit bakınca kendiliğinden tarar.</p>
       <div id="itQr" hidden></div>
@@ -492,15 +495,17 @@ function onRecording(m) {
 // ---------- Bilgi islem ----------
 let itActive = false, itCur = {};
 function itBody(text) {
-  const t = (text || "").replace(/^\s*ÖZET:.*\n?/, "");
+  const t = (text || "").replace(/\*\*/g, "").replace(/^\s*ÖZET:.*\n?/, "");
   return t.split(/```/).map((p, i) => i % 2 ? `<pre>${esc(p.replace(/^[a-zA-Z0-9]*\n/, ""))}</pre>` : esc(p)).join("");
 }
+const KIND_TR = { hw: "Donanım", error: "Hata", ecg: "EKG" };
 function itCard(r, live) {
   const when = new Date(r.time * 1000);
   return `<article class="itcard">
-    <header><span class="kind ${r.kind}">${r.kind === "hw" ? "Donanım" : "Hata"}</span>
-      <b>${r.qr ? esc(r.qr) : ""}</b><span>${when.toLocaleTimeString().slice(0, 5)} · ${esc(r.source || "")}${r.seconds ? `, ${r.seconds} sn` : ""}</span></header>
+    <header><span class="kind ${r.kind}">${KIND_TR[r.kind] || r.kind}</span>
+      <b>${r.qr ? esc(r.qr) : ""}</b><span>${when.toLocaleTimeString().slice(0, 5)} · ${esc(r.source || "")}${r.model ? `, ${esc(r.model)}` : ""}${r.seconds ? `, ${r.seconds} sn` : ""}</span></header>
     <a href="${r.image}" target="_blank"><img alt="" src="${r.image}"></a>
+    ${r.urgent ? `<p class="urgent">ACİL: ${esc(r.urgent)}</p>` : ""}
     ${r.summary ? `<p class="sum">${esc(r.summary)}</p>` : (live ? `<p class="hint">Claude inceliyor…</p>` : "")}
     <div class="body">${itBody(r.text)}</div>
     ${r.error ? `<p class="hint" style="color:#ffb3a8">${esc(r.error)}</p>` : ""}
@@ -519,7 +524,7 @@ function onItList(m) {
   box.innerHTML = "";
   for (const r of m.items) {
     const row = document.createElement("div"); row.className = "itrow";
-    row.innerHTML = `<img alt="" src="${r.image}"><div><b>${r.kind === "hw" ? "Donanım" : "Hata"}${r.qr ? " · " + esc(r.qr) : ""}</b>
+    row.innerHTML = `<img alt="" src="${r.image}"><div><b>${KIND_TR[r.kind] || r.kind}${r.urgent ? " · ACİL" : ""}${r.qr ? " · " + esc(r.qr) : ""}</b>
       <span class="hint" style="margin-left:6px">${new Date(r.time * 1000).toLocaleString().slice(0, 16)}</span><p>${esc(r.summary || "")}</p></div>`;
     row.onclick = () => { itCur = r; $("itLive").innerHTML = itCard(r, false); $("pIT").scrollTop = 0; };
     box.append(row);
@@ -540,6 +545,7 @@ function onItQr(m) {
 $("itToggle").onclick = () => send({ type: "it_mode", on: !itActive });
 $("itScan").onclick = () => send({ type: "it_scan" });
 $("itPcErr").onclick = () => send({ type: "it_error", pc: true });
+$("itEcg").onclick = () => send({ type: "ecg" });
 
 // ---------- Arac gunlugu ----------
 function onVehicles(m) {

@@ -21,8 +21,11 @@ struct ITView: View {
           ActionChip(title: "PC hatası", icon: "desktopcomputer") {
             model.itError(pc: true)
           }
+          ActionChip(title: "EKG", icon: "waveform.path.ecg") {
+            model.sendECG()
+          }
         }
-        Text("Sesli: “bilgi işlem modunu başlat”, “tara”, “bu hata ne”, “bilgisayarımdaki hata ne”.")
+        Text("Sesli: “bilgi işlem modunu başlat”, “tara”, “bu hata ne”, “bilgisayarımdaki hata ne”, “bu EKG'yi yorumla”.")
           .font(.footnote).foregroundStyle(Theme.muted)
       }
 
@@ -91,13 +94,23 @@ struct ITCard: View {
         KindBadge(kind: record.kind)
         if let q = record.qr { Text(q).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text) }
         Spacer()
-        Text(record.done ? (record.seconds.map { String(format: "%.1f sn", $0) } ?? "") : "inceleniyor…")
+        Text(record.done
+             ? [record.model, record.seconds.map { String(format: "%.1f sn", $0) }].compactMap { $0 }.joined(separator: ", ")
+             : "inceleniyor…")
           .font(.caption).foregroundStyle(Theme.muted)
       }
       AsyncImage(url: imageURL) { $0.resizable().scaledToFit() } placeholder: {
         Theme.raised.frame(height: 160)
       }
       .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+      if let u = record.urgent, !u.isEmpty {
+        Label("ACİL: \(u)", systemImage: "exclamationmark.octagon.fill")
+          .font(.subheadline.weight(.bold))
+          .foregroundStyle(Color(hex: 0xFFD2CB))
+          .padding(10)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .background(Theme.bad.opacity(0.18), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      }
       if !record.summary.isEmpty {
         Text(record.summary).font(.subheadline.weight(.bold)).foregroundStyle(Theme.text)
       }
@@ -134,12 +147,14 @@ struct ITBody: View {
 
 struct KindBadge: View {
   var kind: String
+  private var title: String { ["hw": "Donanım", "error": "Hata", "ecg": "EKG"][kind] ?? kind }
+  private var color: Color { kind == "hw" ? Theme.steel : kind == "ecg" ? Theme.amber : Theme.bad }
   var body: some View {
-    Text(kind == "hw" ? "Donanım" : "Hata")
+    Text(title)
       .font(.caption.weight(.bold))
       .padding(.horizontal, 8).padding(.vertical, 3)
-      .foregroundStyle(kind == "hw" ? Theme.steel : Theme.bad)
-      .background((kind == "hw" ? Theme.steel : Theme.bad).opacity(0.16), in: Capsule())
+      .foregroundStyle(color)
+      .background(color.opacity(0.16), in: Capsule())
   }
 }
 

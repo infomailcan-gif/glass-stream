@@ -636,6 +636,9 @@ def run(args: argparse.Namespace) -> None:
                                 else:
                                     img, src = it_image(cmd)
                                     itm.error(img, src, cmd.get("text", ""))
+                            elif t == "ecg":  # EKG yorumu (gozluk fotografi / canli kare)
+                                img, src = it_image(cmd)
+                                itm.ecg(img, src)
                             elif t == "qr":  # telefonda okunan QR (anlik)
                                 txt = str(cmd.get("text", ""))[:300]
                                 det.qr_last[txt] = time.time()  # PC ayni QR'i tekrar anons etmesin
