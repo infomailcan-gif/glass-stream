@@ -13,8 +13,14 @@ if %errorlevel%==0 (
   timeout /t 2 /nobreak >nul
 )
 
-echo [2/2] Yapay zeka servisi baslatiliyor (modeller ~20 sn'de yuklenir)...
-start "AI Systems - Yapay Zeka" /min "%~dp0start-vision.cmd"
+rem Yapay zeka servisi zaten calisiyor mu? Iki kopya ekran kartini paylasip birbirini yavaslatir.
+powershell -NoProfile -Command "if (Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object CommandLine -match 'detector\.py') { exit 0 } else { exit 1 }"
+if %errorlevel%==0 (
+  echo Yapay zeka servisi zaten calisiyor, yeniden baslatilmadi.
+) else (
+  echo [2/2] Yapay zeka servisi baslatiliyor ^(modeller ~20 sn'de yuklenir^)...
+  start "AI Systems - Yapay Zeka" /min "%~dp0start-vision.cmd"
+)
 
 timeout /t 3 /nobreak >nul
 start "" http://localhost:8000

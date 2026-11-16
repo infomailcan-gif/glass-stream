@@ -4,9 +4,11 @@ Iki mod:
   raw       : gozluk goruntusu oldugu gibi
   annotated : kutular + etiketler cizilmis (ISG raporu / kanit icin)
 
-Kareler degisken hizda gelir; kayit sabit FPS'te tutulur (gerekirse son kare
-tekrarlanir), boylece video gercek surede oynar. Kodlama ayri thread'de ffmpeg
-ile yapilir; analiz dongusu beklemez.
+Telefondan gelen HER kare (JPEG) dogrudan kayda girer; analiz hizindan bagimsizdir.
+Kutular en son analiz sonucundan cizilir (katman yalnizca kutular degisince yeniden
+hazirlanir, her karede sadece ust uste bindirilir). Kayit sabit FPS'te tutulur
+(gerekirse son kare tekrarlanir), boylece video gercek surede oynar. Kodlama ayri
+thread'de ffmpeg ile yapilir; analiz dongusu beklemez.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 HERE = Path(__file__).resolve().parent
 RECORDINGS = HERE / "recordings"
-FPS = 20
+FPS = 30
 
 
 def _find_ffmpeg() -> str | None:
@@ -77,6 +79,17 @@ def draw_boxes(frame: np.ndarray, boxes: list[dict], footer: str = "") -> np.nda
     return cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
 
 
+def overlay_layer(w: int, h: int, boxes: list[dict], footer: str) -> tuple[np.ndarray, np.ndarray]:
+    """Kutulari bos (siyah) bir katmana cizer; (BGR katman, maske) dondurur."""
+    key = np.array(_KEY, np.uint8)  # cizimde gecmeyen bir zemin rengi
+    drawn = draw_boxes(np.broadcast_to(key, (h, w, 3)).copy(), boxes, footer)
+    mask = np.any(drawn != key, axis=2)
+    return drawn, mask
+
+
+_KEY = (3, 251, 7)
+
+
 class Recorder:
     def __init__(self) -> None:
         self.ffmpeg = _find_ffmpeg()
@@ -84,8 +97,9 @@ class Recorder:
         self.mode = "annotated"
         self.file: str | None = None
         self.started = 0.0
-        self._q: queue.Queue = queue.Queue(maxsize=60)
+        self._q: queue.Queue = queue.Queue(maxsize=90)
         self._thread: threading.Thread | None = None
+        self._overlay: tuple[list[dict], str] = ([], "")  # en son analizin kutulari + alt yazi
         RECORDINGS.mkdir(exist_ok=True)
         print(f"[kayit] ffmpeg: {self.ffmpeg or 'BULUNAMADI'}")
 
@@ -100,7 +114,7 @@ class Recorder:
         self.file = f"{stamp}{'-kkd' if self.mode == 'annotated' else ''}.mp4"
         self.started = time.time()
         self.active = True
-        self._q = queue.Queue(maxsize=60)
+        self._q = queue.Queue(maxsize=90)
         self._thread = threading.Thread(target=self._encode, args=(RECORDINGS / self.file,), daemon=True)
         self._thread.start()
         return True, "Kayıt başladı."
@@ -139,11 +153,16 @@ class Recorder:
                 if not (self.active and p.name == self.file)]
 
     # ---------------- kare besleme ----------------
-    def feed(self, frame: np.ndarray, boxes: list[dict], footer: str = "") -> None:
+    def set_overlay(self, boxes: list[dict], footer: str = "") -> None:
+        """Analiz dongusu: kayittaki karelere cizilecek en son kutular."""
+        self._overlay = (boxes, footer)
+
+    def feed_jpeg(self, data: bytes) -> None:
+        """Telefondan gelen her kare (analizi beklemeden)."""
         if not self.active:
             return
         try:
-            self._q.put_nowait((frame, boxes if self.mode == "annotated" else None, footer, time.time()))
+            self._q.put_nowait((data, time.time()))
         except queue.Full:
             pass  # disk/islemci yetismezse kare atla; zaman damgasi bosluga gore tekrar eder
 
@@ -153,12 +172,17 @@ class Recorder:
         written = 0
         t0 = None
         last = None
+        cache_key = None
+        layer = mask = None
         try:
             while True:
                 item = self._q.get()
                 if item is None:
                     break
-                frame, boxes, footer, ts = item
+                data, ts = item
+                frame = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+                if frame is None:
+                    continue
                 if size is None:
                     h, w = frame.shape[:2]
                     size = (w - w % 2, h - h % 2)  # H.264 cift boyut ister
@@ -172,8 +196,12 @@ class Recorder:
                     t0 = ts
                 if (frame.shape[1], frame.shape[0]) != size:
                     frame = cv2.resize(frame, size)  # SDK cozunurlugu degistirirse
-                if boxes is not None:
-                    frame = draw_boxes(frame, boxes, footer)
+                if self.mode == "annotated":
+                    ov = self._overlay
+                    if ov is not cache_key:  # kutular degisti: katmani yeniden hazirla
+                        cache_key = ov
+                        layer, mask = overlay_layer(size[0], size[1], ov[0], ov[1])
+                    frame[mask] = layer[mask]
                 last = frame
                 # Gercek zamana gore kac kare yazilmali? Eksikse son kareyi tekrarla.
                 due = int((ts - t0) * FPS) + 1

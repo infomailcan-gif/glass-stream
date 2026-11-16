@@ -1,9 +1,11 @@
 """Genis nesne kutuphanesi (YOLOE, acik sozluklu).
 
-Iki mod:
+Uc mod:
   * "list"   : web'den yazilan nesneler aranir (or. "forklift, yangin tupu").
                Turkce ISG terimleri sozlukle Ingilizceye cevrilir; sozlukte
                olmayanlar oldugu gibi (Ingilizce yazilmissa) kullanilir.
+  * "preset" : hazir ortam secimi (or. "Sunucu odasi"); ortam alt dallara ayrilir
+               (Ag cihazlari, Kablolama, Guc...), her dal ayri acilip kapatilir.
   * "catalog": hicbir sey yazmadan ~4.585 nesne turu (prompt-free model).
 
 Model ayri thread'de calisir; ana analiz dongusunu yavaslatmaz.
@@ -79,6 +81,68 @@ try:
     CATALOG_TR: dict[str, str] = json.loads((HERE / "catalog_tr.json").read_text(encoding="utf-8"))
 except (OSError, ValueError):
     CATALOG_TR = {}
+
+# Hazir ortamlar: ortam -> alt dallar -> (gosterilen ad, modele verilen ifade).
+# Yeni ortam / alt dal eklemek icin buraya yazmak yeter; telefon ve web otomatik gosterir.
+PRESETS: dict[str, dict] = {
+    "server_room": {
+        "name": "Sunucu odası",
+        # Hazir modeller ag donanimini zayif taniyor; puanlar dusuk gelir, esik bu ortam icin dusuk.
+        "conf": 0.15,
+        "groups": {
+            "network": {"name": "Ağ cihazları", "items": [
+                ("switch / rack cihazı", ("cisco switch", "rack mount network switch with ports", "ethernet switch")),
+                ("patch panel", ("patch panel", "rj45 patch panel")),
+                ("router", ("network router",)),
+                ("firewall", ("network firewall appliance",)),
+                ("access point", ("wireless access point",)),
+                ("modem", ("modem",)),
+            ]},
+            "rack": {"name": "Sunucu ve kabinet", "items": [
+                ("kabinet", ("server rack", "rack cabinet")),
+                ("sunucu", ("rack mounted server",)),
+                ("depolama ünitesi", ("storage array",)),
+                ("monitör", ("computer monitor",)),
+            ]},
+            "cabling": {"name": "Kablolama", "items": [
+                ("kablo demeti", ("bundle of cables", "tangled cables")),
+                ("ethernet portu", ("ethernet port", "row of ethernet ports")),
+                ("fiber kablo", ("fiber optic cable",)),
+                ("SFP modülü", ("sfp transceiver module",)),
+            ]},
+            "power": {"name": "Güç", "items": [
+                ("UPS", ("uninterruptible power supply",)),
+                ("PDU / priz grubu", ("power distribution unit", "power strip")),
+                ("akü", ("battery",)),
+            ]},
+            "safety": {"name": "Ortam güvenliği", "items": [
+                ("yangın tüpü", ("fire extinguisher",)),
+                ("duman dedektörü", ("smoke detector",)),
+                ("klima", ("air conditioner",)),
+                ("su sızıntısı", ("water leak on floor",)),
+                ("koli", ("cardboard box",)),
+            ]},
+        },
+    },
+}
+
+
+def preset_items(key: str, groups: list[str] | None) -> list[tuple[str, str]]:
+    """Secili alt dallardaki (gosterilen ad, ifade) ciftleri; dal secilmemisse hepsi.
+    Bir nesnenin birden cok ifadesi varsa her biri ayri cift olur (ayni gosterilen ad)."""
+    pr = PRESETS.get(key)
+    if not pr:
+        return []
+    keys = [g for g in (groups or []) if g in pr["groups"]] or list(pr["groups"])
+    return [(n, e) for g in keys for n, es in pr["groups"][g]["items"] for e in es]
+
+
+def presets_info() -> list[dict]:
+    return [{"key": k, "name": v["name"],
+             "groups": [{"key": gk, "name": g["name"], "items": [n for n, _ in g["items"]]}
+                        for gk, g in v["groups"].items()]}
+            for k, v in PRESETS.items()]
+
 
 DEFAULT_LIST = ["forklift", "yangın tüpü", "merdiven", "palet", "gaz tüpü", "sıvı dökülmesi", "sigara", "telefon"]
 
@@ -173,6 +237,10 @@ class ObjectFinder:
         self.items: list[str] = cfg.get("items", DEFAULT_LIST)
         self.alerts: list[str] = cfg.get("alerts", [])  # gorulunce sesli bildirilecekler
         self.conf: float = cfg.get("conf", 0.3)
+        self.preset: str = cfg.get("preset", "server_room")
+        if self.preset not in PRESETS:
+            self.preset = "server_room"
+        self.groups: list[str] = cfg.get("groups", [])  # bos = ortamin tum alt dallari
         self._model = None
         self._model_mode = None
         self._dirty = True
@@ -189,18 +257,28 @@ class ObjectFinder:
     def _save(self) -> None:
         CONFIG.write_text(
             json.dumps({"mode": self.mode, "items": self.items, "alerts": self.alerts,
-                        "conf": self.conf, "enabled": self.enabled}, ensure_ascii=False, indent=1),
+                        "conf": self.conf, "enabled": self.enabled, "preset": self.preset,
+                        "groups": self.groups}, ensure_ascii=False, indent=1),
             encoding="utf-8",
         )
 
     def configure(self, cfg: dict) -> None:
         with self._lock:
-            if "mode" in cfg and cfg["mode"] in ("list", "catalog"):
+            if "mode" in cfg and cfg["mode"] in ("list", "preset", "catalog"):
                 self.mode = cfg["mode"]
+            if cfg.get("preset") in PRESETS:
+                if cfg["preset"] != self.preset:
+                    self.groups = []
+                self.preset = cfg["preset"]
+                self.mode = "preset"
+            if "groups" in cfg:
+                gs = PRESETS[self.preset]["groups"]
+                self.groups = [g for g in cfg["groups"] if g in gs]
             if "items" in cfg:
                 self.items = [s.strip() for s in cfg["items"] if s and s.strip()][:80]
             if "alerts" in cfg:
-                self.alerts = [s for s in cfg["alerts"] if s in self.items]
+                known = set(self.items) | {n for n, _ in preset_items(self.preset, None)}
+                self.alerts = [s for s in cfg["alerts"] if s in known]
             if "enabled" in cfg:
                 self.enabled = bool(cfg["enabled"])
             self._dirty = True
@@ -210,6 +288,8 @@ class ObjectFinder:
         return {
             "type": "objects_cfg", "mode": self.mode, "items": self.items, "alerts": self.alerts,
             "enabled": self.enabled, "dictionary": sorted(TR_EN.keys()),
+            "preset": self.preset, "groups": self.groups or list(PRESETS[self.preset]["groups"]),
+            "presets": presets_info(),
         }
 
     # ---------------- calisma ----------------
@@ -228,7 +308,9 @@ class ObjectFinder:
 
         with self._lock:
             mode, items = self.mode, list(self.items)
+            preset, groups = self.preset, list(self.groups)
             self._dirty = False
+        self._conf = PRESETS[preset].get("conf", self.conf) if mode == "preset" else self.conf
         if mode == "catalog":
             if self._model_mode != "catalog":
                 # En buyuk (en isabetli) katalog modeli; yoksa kucuge dus
@@ -241,12 +323,23 @@ class ObjectFinder:
             print(f"[objects] genis katalog modu: {len(self._model.names)} sinif")
         else:
             if self._model_mode != "list":
-                self._model = YOLOE(str(MODELS / "yoloe-11s-seg.pt"))
+                # Metinle arama: en buyuk / en yeni model (YOLOE-26-L), yoksa kucuge dus
+                for name in ("yoloe-26l-seg.pt", "yoloe-11l-seg.pt", "yoloe-11s-seg.pt"):
+                    if (MODELS / name).exists():
+                        break
+                self._model = YOLOE(str(MODELS / name))
                 self._model_mode = "list"
-            prompts = [to_prompt(i) for i in items] or ["person"]
+                print(f"[objects] metin modeli: {name}")
+            if mode == "preset":
+                pairs = preset_items(preset, groups)
+                display, prompts = [n for n, _ in pairs], [e for _, e in pairs]
+            else:
+                display, prompts = items, [to_prompt(i) for i in items]
+            if not prompts:
+                display, prompts = ["person"], ["person"]
             self._model.set_classes(prompts, self._model.get_text_pe(prompts))
-            self._display = items or ["person"]
-            print(f"[objects] liste modu: {list(zip(self._display, prompts))}")
+            self._display = display
+            print(f"[objects] {'ortam ' + preset if mode == 'preset' else 'liste'} modu: {list(zip(display, prompts))}")
 
     def _loop(self) -> None:
         while True:
@@ -270,8 +363,9 @@ class ObjectFinder:
                     self._prepare()
                 t = time.time()
                 self._last_run = t
-                r = self._model.predict(frame, device=self.device, conf=self.conf, verbose=False,
-                                        half=self.device == 0)[0]
+                r = self._model.predict(frame, device=self.device, conf=getattr(self, "_conf", self.conf),
+                                        verbose=False, half=self.device == 0,
+                                        agnostic_nms=bool(self._display))[0]  # ayni nesneye iki ifadeden iki kutu cizme
                 out = []
                 H, W = frame.shape[:2]
                 if r.boxes is not None:
@@ -281,7 +375,7 @@ class ObjectFinder:
                         if r.names[c] == "person" or name == "person" or (not self._display and is_scene(r.names[c])):
                             continue  # kisileri KKD modeli isliyor; sahne siniflari anlamsiz
                         area = (b[2] - b[0]) * (b[3] - b[1]) / (W * H)
-                        if area > MAX_AREA:
+                        if not self._display and area > MAX_AREA:  # yalniz katalogda (sahne kutulari)
                             continue  # butun kareyi kaplayan dev kutular
                         out.append((tuple(float(v) for v in b), name, s))
                 with self._lock:

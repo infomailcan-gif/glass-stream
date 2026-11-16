@@ -323,7 +323,15 @@
       <h3>Nesne kütüphanesi</h3>
       <div class="seg" id="objMode">
         <button type="button" data-mode="list" aria-pressed="false">Özel liste</button>
+        <button type="button" data-mode="preset" aria-pressed="false">Ortam</button>
         <button type="button" data-mode="catalog" aria-pressed="false">Geniş katalog</button>
+      </div>
+      <div id="objPresetWrap" hidden style="margin-top:10px">
+        <div class="checks" id="objPresets"></div>
+        <p class="hint" style="margin-top:8px">Aranacaklar</p>
+        <div class="checks" id="objGroups"></div>
+        <p class="hint" id="objGroupItems"></p>
+        <p class="hint">Cihazların türü kabaca işaretlenir. Port, ışık ve model için cihaza bakıp BT'de “Tara” de.</p>
       </div>
       <div id="objListWrap">
         <form class="row" id="objForm" style="margin-top:10px">
@@ -642,6 +650,27 @@ function onObjCfg(m) {
   objCfg = m;
   document.querySelectorAll("#objMode button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.mode === m.mode));
   $("objListWrap").style.opacity = m.mode === "list" ? 1 : 0.45;
+  $("objListWrap").hidden = m.mode === "preset";
+  $("objPresetWrap").hidden = m.mode !== "preset";
+  const presets = m.presets || [], cur = presets.find((p) => p.key === m.preset);
+  $("objPresets").innerHTML = "";
+  for (const p of presets) {
+    const lab = document.createElement("label");
+    lab.innerHTML = `<input type="radio" name="objPreset" ${p.key === m.preset ? "checked" : ""}>${esc(p.name)}`;
+    lab.querySelector("input").onchange = () => send({ type: "objects_set", preset: p.key });
+    $("objPresets").append(lab);
+  }
+  $("objGroups").innerHTML = "";
+  for (const g of cur ? cur.groups : []) {
+    const lab = document.createElement("label");
+    lab.innerHTML = `<input type="checkbox" ${m.groups.includes(g.key) ? "checked" : ""}>${esc(g.name)}`;
+    lab.querySelector("input").onchange = (e) => {
+      const gs = e.target.checked ? [...m.groups, g.key] : m.groups.filter((x) => x !== g.key);
+      if (gs.length) send({ type: "objects_set", groups: gs }); else e.target.checked = true;
+    };
+    $("objGroups").append(lab);
+  }
+  $("objGroupItems").textContent = cur ? cur.groups.filter((g) => m.groups.includes(g.key)).flatMap((g) => g.items).join(", ") : "";
   $("objDict").innerHTML = m.dictionary.map((d) => `<option value="${esc(d)}">`).join("");
   const ul = $("objItems"); ul.innerHTML = "";
   for (const it of m.items) {

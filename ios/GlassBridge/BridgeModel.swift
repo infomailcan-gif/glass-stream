@@ -552,6 +552,27 @@ final class BridgeModel {
   var objMode = "list"
   var objItems: [String] = []
   var objAlerts: [String] = []
+  struct ObjGroup: Identifiable { let id: String; let name: String; let items: [String] }
+  struct ObjPreset: Identifiable { let id: String; let name: String; let groups: [ObjGroup] }
+  var objPresets: [ObjPreset] = []
+  var objPreset = "server_room"
+  var objGroups: [String] = []
+
+  /// Hazir ortam sec (or. Sunucu odasi); nesne kutuphanesi "ortam" moduna gecer.
+  func setObjPreset(_ key: String) {
+    objPreset = key
+    objMode = "preset"
+    uploader.sendJSON(["type": "objects_set", "preset": key])
+  }
+
+  /// Ortamin alt dalini (Ag cihazlari, Kablolama...) ac / kapat. En az bir dal acik kalir.
+  func setObjGroup(_ key: String, on: Bool) {
+    var gs = objGroups.filter { $0 != key }
+    if on { gs.append(key) }
+    guard !gs.isEmpty else { return }
+    objGroups = gs
+    uploader.sendJSON(["type": "objects_set", "groups": gs])
+  }
   var watchlist: [String] = []
 
   func setPPE(_ key: String, required: Bool) {
@@ -640,6 +661,17 @@ final class BridgeModel {
       objMode = obj["mode"] as? String ?? "list"
       objItems = obj["items"] as? [String] ?? []
       objAlerts = obj["alerts"] as? [String] ?? []
+      objPreset = obj["preset"] as? String ?? objPreset
+      objGroups = obj["groups"] as? [String] ?? []
+      if let ps = obj["presets"] as? [[String: Any]] {
+        objPresets = ps.map { p in
+          ObjPreset(id: p["key"] as? String ?? "", name: p["name"] as? String ?? "",
+                    groups: (p["groups"] as? [[String: Any]] ?? []).map { g in
+                      ObjGroup(id: g["key"] as? String ?? "", name: g["name"] as? String ?? "",
+                               items: g["items"] as? [String] ?? [])
+                    })
+        }
+      }
     case "watchlist":
       watchlist = obj["plates"] as? [String] ?? []
     case "it_state":

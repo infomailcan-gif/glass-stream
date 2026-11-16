@@ -19,15 +19,26 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Islemci siniri: modeller ekran kartinda calisir; torch/OpenMP/MKL varsayilan olarak
+# tum cekirdekleri acip bosta bile "donerek" bekler. Bu, PC'yi ve canli goruntuyu
+# takiltiyordu (servis 16 cekirdegin ~11'ini yiyordu). Kutuphaneler yuklenmeden ayarlanmali.
+for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_v, "4")
+os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")  # bosta beklerken cekirdegi doldurma
+
 import cv2
 import numpy as np
 import torch
 import zxingcpp
+
+torch.set_num_threads(4)
+cv2.setNumThreads(2)
 from ultralytics import YOLO
 from websockets.sync.client import connect
 
@@ -41,7 +52,7 @@ FACES_DIR = HERE / "faces"
 MODEL_INFO: dict[str, tuple[str, str, bool]] = {
     "ppe": ("Kişi ve KKD", "YOLO26-X + ReID kişi sayımı · SH17-X baret, maske, yelek…", True),
     "faces": ("Yüz tanıma", "SCRFD-10G + ArcFace R100 · tekrar sayımı önler, yüz kaydı", True),
-    "objects": ("Nesne kütüphanesi", "YOLOE-L · 4.585 tür veya özel liste", True),
+    "objects": ("Nesne kütüphanesi", "YOLOE-26-L · özel liste, hazır ortam (Sunucu odası) veya 4.585 tür", True),
     "vehicles": ("Araç tanıma", "YOLO26-X · tür, renk, plaka eşleştirme, araç günlüğü", True),
     "plates": ("Plaka okuma", "YOLOv9-S-608 + CCT · Türk plaka düzeltmesi, tüm plakalar + aranan plaka", True),
     "qr": ("QR / Barkod", "zxing-cpp", True),
@@ -714,6 +725,7 @@ def run(args: argparse.Namespace) -> None:
                         for msg in ws:
                             if isinstance(msg, bytes):
                                 latest.put((msg, state.get("seq")))  # kare + telefonun sira numarasi
+                                rec.feed_jpeg(msg)  # kayit her kareyi alir (analiz hizini beklemez)
                                 continue
                             if msg.startswith('{"type":"seq"'):  # her kareden once gelir (hizli yol)
                                 try:
@@ -917,7 +929,7 @@ def run(args: argparse.Namespace) -> None:
                     if c:
                         footer += f"  |  Kişi: {c.get('total_people', 0)}" + "".join(
                             f"  {p['name']} eksik: {p['missing']}" for p in c.get("ppe", []))
-                    rec.feed(frame, result["boxes"], footer)
+                    rec.set_overlay(result["boxes"], footer)
                     # Bilgi islem modu: goruntu sabitlenince telefondan yuksek cozunurluklu foto iste
                     if itm.active and itm.auto and not itm.busy["hw"]:
                         if pending["capture"] and time.time() - pending["capture"] > 2.5:

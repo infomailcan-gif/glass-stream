@@ -375,10 +375,25 @@ struct ModelsView: View {
       Card(title: "Nesne kütüphanesi") {
         Picker("Mod", selection: Binding(get: { model.objMode }, set: { model.setObjMode($0) })) {
           Text("Özel liste").tag("list")
+          Text("Ortam").tag("preset")
           Text("Geniş katalog").tag("catalog")
         }
         .pickerStyle(.segmented)
-        if model.objMode == "list" {
+        if model.objMode == "preset" {
+          FlowChips(items: model.objPresets.map { ($0.id, $0.name) }, selected: [model.objPreset]) { key, _ in
+            model.setObjPreset(key)
+          }
+          if let p = model.objPresets.first(where: { $0.id == model.objPreset }) {
+            Text("Aranacaklar").font(.footnote.weight(.semibold)).foregroundStyle(Theme.muted)
+            FlowChips(items: p.groups.map { ($0.id, $0.name) }, selected: Set(model.objGroups)) { key, on in
+              model.setObjGroup(key, on: on)
+            }
+            Text(p.groups.filter { model.objGroups.contains($0.id) }.flatMap(\.items).joined(separator: ", "))
+              .font(.footnote).foregroundStyle(Theme.muted)
+            Text("Cihazların türü kabaca işaretlenir. Port, ışık ve model için cihaza bakıp BT'de “Tara” de.")
+              .font(.footnote).foregroundStyle(Theme.muted)
+          }
+        } else if model.objMode == "list" {
           AddField(placeholder: "forklift, yangın tüpü, ladder") { model.addObjects($0) }
           ForEach(model.objItems, id: \.self) { item in
             HStack {
